@@ -9,7 +9,6 @@ processors and less well on magazine layouts.
 from __future__ import annotations
 
 import re
-import statistics
 from collections import Counter
 
 from app.converters.models import Block, BlockKind, TextLine
@@ -160,7 +159,12 @@ def _as_heading(line: TextLine, scale: dict[float, int], body_size: float) -> Bl
     # Bold body text on its own short line, with no terminal punctuation, is
     # the most common way word processors mark a minor heading.
     if line.is_bold and size >= body_size and len(text.split()) <= 8:
-        return Block(kind=BlockKind.HEADING, text=text, level=min(len(scale) + 1, 6), page=line.page)
+        return Block(
+            kind=BlockKind.HEADING,
+            text=text,
+            level=min(len(scale) + 1, 6),
+            page=line.page,
+        )
 
     return None
 

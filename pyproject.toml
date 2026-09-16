@@ -1,0 +1,47 @@
+[project]
+name = "pdf-to-markdown"
+version = "1.0.0"
+description = "Converts PDF documents into Markdown, inferring structure from typography."
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+filterwarnings = [
+    # starlette's TestClient still imports httpx, which is fine for tests.
+    "ignore::DeprecationWarning",
+    "ignore::UserWarning",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle
+    "F",    # pyflakes
+    "I",    # import sorting
+    "UP",   # pyupgrade
+    "B",    # bugbear
+    "SIM",  # simplify
+    "RUF",  # ruff specific
+]
+ignore = [
+    # FastAPI dependency defaults in signatures are the documented style.
+    "B008",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E501", "RUF001"]
+# The bullet constants are intentionally unusual Unicode characters; flagging
+# them as "ambiguous" is exactly backwards for a module whose job is to
+# recognise them.
+"app/converters/structure.py" = ["RUF001"]
+# A single embedded HTML document, where reflowing lines would hurt more than
+# the line length rule helps.
+"app/web.py" = ["E501"]
+
+[tool.coverage.run]
+source = ["app"]
+omit = ["app/web.py"]

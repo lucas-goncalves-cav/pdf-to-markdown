@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 
 
-class BlockKind(str, Enum):
+class BlockKind(StrEnum):
     """What a run of text on the page turned out to be."""
 
     HEADING = "heading"

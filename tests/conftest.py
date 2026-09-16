@@ -22,7 +22,7 @@ def build_pdf(pages: list[list[dict]]) -> bytes:
 
     buffer = io.BytesIO()
     pdf = canvas.Canvas(buffer, pagesize=A4)
-    width, height = A4
+    _width, height = A4
 
     for page in pages:
         cursor = height - 72

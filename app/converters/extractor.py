@@ -11,6 +11,7 @@ from __future__ import annotations
 import io
 import logging
 import re
+from itertools import pairwise
 
 import pdfplumber
 
@@ -152,7 +153,7 @@ def _join_characters(chars: list[dict]) -> str:
 
     parts = [chars[0]["text"]]
 
-    for previous, current in zip(chars, chars[1:]):
+    for previous, current in pairwise(chars):
         gap = current["x0"] - previous["x1"]
         threshold = max(previous.get("width", 0), current.get("width", 0)) * 0.3
 
