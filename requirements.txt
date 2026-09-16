@@ -1,5 +1,6 @@
+# Pinned to the versions this project is actually tested against.
 fastapi==0.141.1
-uvicorn[standard]==0.41.0
-python-multipart==0.0.22
+uvicorn[standard]==0.53.0
+python-multipart==0.0.32
 pypdf==6.19.0
-pdfplumber==0.11.7
+pdfplumber==0.11.10
