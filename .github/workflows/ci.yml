@@ -1,0 +1,99 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Lint and test
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Test
+        run: pytest --cov=app --cov-report=term-missing
+
+  docker:
+    name: Docker image
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t pdf-to-markdown:ci .
+
+      - name: Convert a PDF through the running container
+        run: |
+          docker run -d --name converter -p 8000:8000 pdf-to-markdown:ci
+
+          for _ in $(seq 1 30); do
+            if curl -fsS http://localhost:8000/health > /dev/null 2>&1; then
+              break
+            fi
+            sleep 2
+          done
+
+          pip install reportlab
+          python - <<'PYTHON'
+          from reportlab.lib.pagesizes import A4
+          from reportlab.pdfgen import canvas
+
+          pdf = canvas.Canvas("smoke.pdf", pagesize=A4)
+          pdf.setFont("Helvetica-Bold", 24)
+          pdf.drawString(72, 760, "Smoke Test Title")
+          pdf.setFont("Helvetica", 11)
+          pdf.drawString(72, 730, "A paragraph of body text in the smoke test document.")
+          pdf.showPage()
+          pdf.save()
+          PYTHON
+
+          response=$(curl -fsS -X POST http://localhost:8000/api/convert \
+            -F "file=@smoke.pdf;type=application/pdf")
+
+          echo "$response"
+          echo "$response" | grep -q "# Smoke Test Title"
+          echo "Conversion through the container works."
+
+          # A renamed text file must be rejected on its header, not its name.
+          echo "not a pdf" > fake.pdf
+          status=$(curl -s -o /dev/null -w "%{http_code}" -X POST http://localhost:8000/api/convert \
+            -F "file=@fake.pdf;type=application/pdf")
+
+          if [ "$status" != "400" ]; then
+            echo "::error::A non PDF was not rejected (got $status)."
+            exit 1
+          fi
+
+          echo "Magic byte validation works."
+
+      - name: Dump logs on failure
+        if: failure()
+        run: docker logs converter
+
+      - name: Tear down
+        if: always()
+        run: docker rm -f converter || true
