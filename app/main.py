@@ -7,11 +7,13 @@ import os
 from typing import Literal
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
 from app.api.validation import UploadLimits, UploadRejected, safe_output_name, validate_upload
+from app.converters import ocr as ocr_engine
 from app.converters import pipeline
 from app.converters.extractor import PdfExtractionError
 from app.web import INDEX_HTML
@@ -28,13 +30,44 @@ LIMITS = UploadLimits(
     max_pages=int(os.getenv("MAX_PAGES", 200)),
 )
 
+
+def _env_flag(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+
+    if value is None:
+        return default
+
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+#: ``None`` when OCR is switched off. When it is on but tesseract is missing,
+#: the settings are still passed along, so that a scanned page is reported as
+#: needing OCR the server cannot provide rather than silently dropped.
+OCR = (
+    ocr_engine.OcrSettings(
+        languages=os.getenv("OCR_LANG", "eng"),
+        max_pages=int(os.getenv("OCR_MAX_PAGES", 30)),
+    )
+    if _env_flag("OCR_ENABLED", True)
+    else None
+)
+
+if OCR is not None and (reason := ocr_engine.unavailable_reason(OCR)):
+    logger.warning("OCR is enabled but cannot run: %s. Scanned pages will be skipped.", reason)
+
+
+def _ocr_ready() -> bool:
+    return OCR is not None and ocr_engine.unavailable_reason(OCR) is None
+
+
 app = FastAPI(
     title="PDF to Markdown",
     version="1.0.0",
     description=(
         "Converts a PDF into Markdown, inferring headings from font sizes and "
-        "recovering lists and tables. Upload validation is strict: the file "
-        "header is checked, not just the extension."
+        "recovering lists and tables. Scanned pages are read with OCR when "
+        "tesseract is installed. Upload validation is strict: the file header "
+        "is checked, not just the extension."
     ),
 )
 
@@ -69,10 +102,12 @@ async def health() -> dict[str, str]:
 
 
 @app.get("/api/limits", tags=["Conversion"], summary="The limits this instance enforces")
-async def limits() -> dict[str, int]:
+async def limits() -> dict[str, int | bool]:
     return {
         "maxBytes": LIMITS.max_bytes,
         "maxPages": LIMITS.max_pages,
+        "ocrEnabled": _ocr_ready(),
+        "ocrMaxPages": OCR.max_pages if _ocr_ready() else 0,
     }
 
 
@@ -89,11 +124,25 @@ async def limits() -> dict[str, int]:
 async def convert(
     file: UploadFile = File(description="The PDF to convert."),
     include_tables: bool = Form(True, alias="includeTables"),
+    strip_headers: bool = Form(
+        True,
+        alias="stripHeaders",
+        description="Remove running headers and footers repeated on every page.",
+    ),
 ) -> ConvertResponse:
     data = await _read_and_validate(file)
 
     try:
-        result = pipeline.convert(data, include_tables=include_tables, max_pages=LIMITS.max_pages)
+        # Conversion is CPU bound and OCR can take minutes, so it runs off the
+        # event loop, which keeps /health and other requests answering.
+        result = await run_in_threadpool(
+            pipeline.convert,
+            data,
+            include_tables=include_tables,
+            max_pages=LIMITS.max_pages,
+            strip_headers=strip_headers,
+            ocr=OCR,
+        )
     except PdfExtractionError as error:
         # The file passed validation, so it is a PDF, but something inside it
         # could not be read. That is 422 rather than 400: the request was
@@ -126,7 +175,9 @@ async def convert_download(file: UploadFile = File(...)) -> PlainTextResponse:
     data = await _read_and_validate(file)
 
     try:
-        result = pipeline.convert(data, max_pages=LIMITS.max_pages)
+        result = await run_in_threadpool(
+            pipeline.convert, data, max_pages=LIMITS.max_pages, ocr=OCR
+        )
     except PdfExtractionError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
 
@@ -153,12 +204,15 @@ async def convert_to_format(
 
     try:
         if output_format == "txt":
-            return PlainTextResponse(
-                content=pipeline.convert_to_text(data, max_pages=LIMITS.max_pages),
-                media_type="text/plain; charset=utf-8",
+            text = await run_in_threadpool(
+                pipeline.convert_to_text, data, max_pages=LIMITS.max_pages, ocr=OCR
             )
 
-        return pipeline.convert_to_json(data, max_pages=LIMITS.max_pages)
+            return PlainTextResponse(content=text, media_type="text/plain; charset=utf-8")
+
+        return await run_in_threadpool(
+            pipeline.convert_to_json, data, max_pages=LIMITS.max_pages, ocr=OCR
+        )
     except PdfExtractionError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
 

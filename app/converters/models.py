@@ -30,13 +30,46 @@ class TextLine:
     is_bold: bool
     #: Distance from the left edge, used to detect nesting in lists.
     x0: float
-    #: Distance from the top of the page, used to keep reading order.
+    #: Distance from the top of the page, in points. It keeps reading order,
+    #: and the gap between two lines is what separates paragraphs.
     top: float
     page: int
 
     @property
     def is_blank(self) -> bool:
         return not self.text.strip()
+
+
+@dataclass
+class Table:
+    """A table found on a page, with its position so it lands in reading order."""
+
+    rows: list[list[str]]
+    page: int
+    #: ``(x0, top, x1, bottom)`` in points, in the same coordinates as
+    #: :class:`TextLine`.
+    bbox: tuple[float, float, float, float]
+
+    @property
+    def top(self) -> float:
+        return self.bbox[1]
+
+
+@dataclass
+class ExtractedDocument:
+    """Everything extraction found, before any of it is classified."""
+
+    lines: list[TextLine]
+    tables: list[Table]
+    page_count: int
+    #: Height of each extracted page in points. Running headers and footers
+    #: are recognised partly by sitting near the top or bottom edge.
+    page_heights: dict[int, float] = field(default_factory=dict)
+    #: Pages whose content is an image rather than text, which is what a
+    #: scanner produces.
+    scanned_pages: list[int] = field(default_factory=list)
+    #: The scanned pages that OCR was run on.
+    ocr_pages: list[int] = field(default_factory=list)
 
 
 @dataclass

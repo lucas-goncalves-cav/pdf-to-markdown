@@ -4,3 +4,7 @@ uvicorn[standard]==0.53.0
 python-multipart==0.0.32
 pypdf==6.19.0
 pdfplumber==0.11.10
+
+# OCR for scanned pages. Also needs the tesseract binary, which the Dockerfile
+# installs; without it, scanned pages are reported instead of read.
+pytesseract==0.3.13

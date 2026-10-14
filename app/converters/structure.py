@@ -9,9 +9,12 @@ processors and less well on magazine layouts.
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections import Counter
+from collections.abc import Iterator
+from itertools import pairwise
 
-from app.converters.models import Block, BlockKind, TextLine
+from app.converters.models import Block, BlockKind, Table, TextLine
 
 #: A line has to be this much larger than body text before size alone is taken
 #: as evidence of a heading. Below it, ordinary variation in a paragraph would
@@ -22,6 +25,15 @@ HEADING_SIZE_RATIO = 1.12
 #: a title page blurb, not a section heading.
 MAX_HEADING_WORDS = 14
 
+#: A gap this many times the normal distance between lines of a paragraph
+#: means a new paragraph starts. Paragraph spacing is usually a third of a
+#: line or more, while lines inside a paragraph vary by a few percent.
+PARAGRAPH_GAP_RATIO = 1.2
+
+#: Lines in one paragraph share a size. A larger jump than this, in points,
+#: is a footnote, a caption or a different block altogether.
+FONT_SIZE_TOLERANCE = 1.0
+
 #: Bullets that word processors emit. The glyph varies by font.
 BULLET_CHARACTERS = "•◦‣⁃∙·●○–—*-"
 
@@ -29,22 +41,45 @@ _BULLET_PATTERN = re.compile(rf"^\s*[{re.escape(BULLET_CHARACTERS)}]\s+(?P<text>
 _ORDERED_PATTERN = re.compile(r"^\s*(?P<marker>\d{1,3})[.)]\s+(?P<text>.+)$")
 _LETTER_PATTERN = re.compile(r"^\s*(?P<marker>[a-zA-Z])[.)]\s+(?P<text>.+)$")
 
-#: A numbered heading such as "2.1 Scope". Distinct from an ordered list item,
-#: which has a single number.
-_NUMBERED_HEADING = re.compile(r"^\s*(?P<numbering>\d+(?:\.\d+){1,4})\.?\s+(?P<text>\S.*)$")
+#: A numbered heading: "2.1 Scope", "2.1.3. Detail", or a single number with
+#: an explicit separator, "8. HABILITAÇÃO" or "8 - HABILITAÇÃO". A bare
+#: "8 Something" is left to the minor heading rule, since plenty of sentences
+#: start with a number.
+_NUMBERED_HEADING = re.compile(
+    r"""^\s*
+    (?P<numbering>
+        \d+(?:\.\d+){1,4}\.?        # 2.1  2.1.3  2.1.3.
+      | \d{1,3}\s?[.)\-–—]          # 8.  8)  8 -  8 –
+    )
+    \s+(?P<text>\S.*)$""",
+    re.VERBOSE,
+)
+
+#: A clause number at the start of a line, such as "1.1." or "13.11", which in
+#: contracts and public notices starts a new paragraph.
+_CLAUSE_START = re.compile(r"^\s*\d{1,3}(?:\.\d{1,3})+\.?\s")
+
+#: A table of contents entry: a title, a dot leader and a page number.
+_TOC_ENTRY = re.compile(r"…\s*\d{1,4}\s*$")
 
 
 def detect_body_size(lines: list[TextLine]) -> float:
-    """The most common font size, which is the body text of the document.
+    """The font size carrying the most text, which is the body of the document.
 
     Using the mode rather than the mean matters: a document with a large title
-    page would drag the mean up and suppress every real heading.
+    page would drag the mean up and suppress every real heading. Counting
+    characters rather than lines matters on short documents, where two
+    headings can outnumber two lines of body text, and on scans, where OCR
+    spreads one body size over neighbouring estimates.
     """
 
     if not lines:
         return 0.0
 
-    sizes = Counter(round(line.font_size, 1) for line in lines)
+    sizes: Counter[float] = Counter()
+
+    for line in lines:
+        sizes[round(line.font_size, 1)] += len(line.text)
 
     return sizes.most_common(1)[0][0]
 
@@ -69,33 +104,108 @@ def build_heading_scale(lines: list[TextLine], body_size: float) -> dict[float, 
     return {size: min(level, 6) for level, size in enumerate(candidates, start=1)}
 
 
-def to_blocks(lines: list[TextLine], tables_by_page: dict | None = None) -> list[Block]:
-    """Classify every line and merge the ones that belong together."""
+def typical_line_pitch(lines: list[TextLine], body_size: float) -> float | None:
+    """The usual distance between consecutive lines of body text.
 
-    if not lines:
+    A low percentile rather than the median: in a document of short
+    paragraphs, most gaps are paragraph gaps, and the median would mistake
+    them for line spacing. ``None`` when there is too little to measure.
+    """
+
+    gaps = sorted(
+        following.top - line.top
+        for line, following in pairwise(lines)
+        if line.page == following.page
+        and round(line.font_size, 1) == round(following.font_size, 1) == body_size
+        and following.top > line.top
+    )
+
+    if len(gaps) < 3:
+        return None
+
+    return gaps[len(gaps) // 5]
+
+
+def to_blocks(lines: list[TextLine], tables: list[Table] | None = None) -> list[Block]:
+    """Classify every line and merge the ones that belong together.
+
+    Tables are placed by their position on the page, so each one sits between
+    the text above and below it rather than at the end of its page.
+    """
+
+    tables = tables or []
+
+    if not lines and not tables:
         return []
 
     body_size = detect_body_size(lines)
     heading_scale = build_heading_scale(lines, body_size)
     indent_base = _detect_indent_base(lines)
+    pitch = typical_line_pitch(lines, body_size)
+    minor_level = min(len(heading_scale) + 1, 6)
 
     blocks: list[Block] = []
     paragraph: list[TextLine] = []
+
+    # The table most recently emitted and the page it last reached, so one
+    # that runs over a page break can be joined back together.
+    open_table: Block | None = None
+    open_table_page = 0
 
     def flush_paragraph() -> None:
         if not paragraph:
             return
 
-        blocks.append(
-            Block(
-                kind=BlockKind.PARAGRAPH,
-                text=_join_wrapped(paragraph),
-                page=paragraph[0].page,
+        # A line standing on its own, in capitals at body size, is how many
+        # documents set a subheading without making it bold:
+        # "CARGO: MERENDEIRA ESCOLAR."
+        if len(paragraph) == 1 and _is_capitalised_title(paragraph[0], body_size):
+            blocks.append(
+                Block(
+                    kind=BlockKind.HEADING,
+                    text=paragraph[0].text.strip(),
+                    level=minor_level,
+                    page=paragraph[0].page,
+                )
             )
-        )
+        else:
+            blocks.append(
+                Block(
+                    kind=BlockKind.PARAGRAPH,
+                    text=_join_wrapped(paragraph),
+                    page=paragraph[0].page,
+                )
+            )
+
         paragraph.clear()
 
-    for line in lines:
+    for item in _in_reading_order(lines, tables):
+        if isinstance(item, Table):
+            flush_paragraph()
+
+            # Nothing between the end of one page's table and the start of the
+            # next page's, and the same columns: it is one table broken by the
+            # page. A repeated header row is dropped rather than kept as data.
+            if (
+                open_table is not None
+                and blocks
+                and blocks[-1] is open_table
+                and item.page == open_table_page + 1
+                and len(item.rows[0]) == len(open_table.rows[0])
+            ):
+                repeats_header = item.rows[0] == open_table.rows[0]
+                open_table.rows.extend(item.rows[1:] if repeats_header else item.rows)
+            else:
+                open_table = Block(
+                    kind=BlockKind.TABLE, text="", rows=list(item.rows), page=item.page
+                )
+                blocks.append(open_table)
+
+            open_table_page = item.page
+            continue
+
+        line = item
+
         if line.is_blank:
             flush_paragraph()
             continue
@@ -107,21 +217,69 @@ def to_blocks(lines: list[TextLine], tables_by_page: dict | None = None) -> list
             blocks.append(heading)
             continue
 
-        item = _as_list_item(line, indent_base)
+        list_item = _as_list_item(line, indent_base)
 
-        if item is not None:
+        if list_item is not None:
             flush_paragraph()
-            blocks.append(item)
+            blocks.append(list_item)
             continue
+
+        if paragraph and starts_new_paragraph(paragraph[-1], line, pitch):
+            flush_paragraph()
 
         paragraph.append(line)
 
     flush_paragraph()
 
-    if tables_by_page:
-        blocks = _insert_tables(blocks, tables_by_page)
-
     return blocks
+
+
+def starts_new_paragraph(previous: TextLine, line: TextLine, pitch: float | None) -> bool:
+    """Whether ``line`` begins a paragraph rather than continuing ``previous``.
+
+    Without this, every run of text between two headings became one
+    paragraph, however many paragraphs the page showed.
+    """
+
+    if abs(line.font_size - previous.font_size) > FONT_SIZE_TOLERANCE:
+        return True
+
+    # A clause number after a finished sentence opens the next clause. The
+    # punctuation check matters: "nos termos do subitem" followed by a line
+    # starting "2.6.4 deste edital" is one sentence wrapped.
+    if _CLAUSE_START.match(line.text) and previous.text.rstrip().endswith((".", ":", ";")):
+        return True
+
+    # A paragraph can continue onto the next page, so the gap only counts
+    # between lines on the same one.
+    if pitch and line.page == previous.page:
+        return line.top - previous.top > pitch * PARAGRAPH_GAP_RATIO
+
+    return False
+
+
+def _in_reading_order(lines: list[TextLine], tables: list[Table]) -> Iterator[TextLine | Table]:
+    """Interleave tables with lines by page and vertical position.
+
+    Lines are already in reading order, so they are never reordered; each
+    table is emitted just before the first line below it.
+    """
+
+    pending = sorted(tables, key=lambda table: (table.page, table.top))
+    index = 0
+
+    for line in lines:
+        while index < len(pending) and _above(pending[index], line):
+            yield pending[index]
+            index += 1
+
+        yield line
+
+    yield from pending[index:]
+
+
+def _above(table: Table, line: TextLine) -> bool:
+    return (table.page, table.top) < (line.page, line.top)
 
 
 def _as_heading(line: TextLine, scale: dict[float, int], body_size: float) -> Block | None:
@@ -132,8 +290,15 @@ def _as_heading(line: TextLine, scale: dict[float, int], body_size: float) -> Bl
     if not text or len(text.split()) > MAX_HEADING_WORDS:
         return None
 
-    # A trailing full stop is strong evidence of a sentence, not a heading.
-    if text.endswith((".", ";", ",")):
+    if text.endswith((";", ",")) or _TOC_ENTRY.search(text):
+        return None
+
+    numbered = _NUMBERED_HEADING.match(text)
+
+    # A trailing full stop is strong evidence of a sentence, except on a line
+    # in capitals or a numbered one, which is how many documents punctuate
+    # their titles: "1. DISPOSIÇÕES INICIAIS."
+    if text.endswith(".") and not (numbered or _is_capitalised(text)):
         return None
 
     size = round(line.font_size, 1)
@@ -142,17 +307,16 @@ def _as_heading(line: TextLine, scale: dict[float, int], body_size: float) -> Bl
     if level is not None:
         return Block(kind=BlockKind.HEADING, text=text, level=level, page=line.page)
 
-    numbered = _NUMBERED_HEADING.match(text)
-
     if numbered and line.is_bold:
-        # "2.1.3 Scope" nests three deep, so the depth comes from the numbering
-        # rather than the font size.
-        depth = numbered.group("numbering").count(".") + 1
+        # "2.1.3 Scope" nests three deep, so the depth comes from the
+        # numbering. Body size numbered headings sit below every size based
+        # level, so a "2.1" can never outrank the "2" it belongs to.
+        depth = len(re.findall(r"\d+", numbered.group("numbering")))
 
         return Block(
             kind=BlockKind.HEADING,
             text=text,
-            level=min(depth, 6),
+            level=min(len(scale) + depth, 6),
             page=line.page,
         )
 
@@ -167,6 +331,38 @@ def _as_heading(line: TextLine, scale: dict[float, int], body_size: float) -> Bl
         )
 
     return None
+
+
+def _is_capitalised(text: str) -> bool:
+    """Whether every letter that has a case is a capital.
+
+    Letter categories are used rather than ``str.isupper``, because the
+    ordinal indicators in "5º ANO" and "1ª ETAPA" count as lowercase there.
+    """
+
+    categories = [unicodedata.category(character) for character in text]
+
+    return categories.count("Lu") >= 3 and "Ll" not in categories
+
+
+def _is_capitalised_title(line: TextLine, body_size: float) -> bool:
+    text = line.text.strip()
+    numbered = _NUMBERED_HEADING.match(text)
+    title = numbered.group("text") if numbered else text
+    words = title.split()
+    wordy = [word for word in words if any(character.isalpha() for character in word)]
+
+    return (
+        _is_capitalised(text)
+        and len(words) <= MAX_HEADING_WORDS
+        and len(text.split()) >= 2
+        # Words rather than figures: "PROFESSOR DE HISTÓRIA 20 R$ 2.565,32 2"
+        # is a table row that table detection missed, not a title.
+        and len(wordy) >= len(words) * 0.75
+        and round(line.font_size, 1) >= body_size
+        and not text.endswith((";", ","))
+        and not _TOC_ENTRY.search(text)
+    )
 
 
 def _as_list_item(line: TextLine, indent_base: float) -> Block | None:
@@ -243,42 +439,3 @@ def _join_wrapped(lines: list[TextLine]) -> str:
             parts.append(text)
 
     return " ".join(part for part in parts if part).strip()
-
-
-def _insert_tables(blocks: list[Block], tables_by_page: dict) -> list[Block]:
-    """Append each page's tables after that page's text.
-
-    Placing a table exactly where it appeared would require matching its
-    bounding box against the surrounding lines. Grouping by page keeps the
-    tables near their context without pretending to a precision the extraction
-    does not have.
-    """
-
-    if not tables_by_page:
-        return blocks
-
-    result: list[Block] = []
-    pages_seen: set[int] = set()
-
-    def emit_tables_for(page: int) -> None:
-        for rows in tables_by_page.get(page, []):
-            if rows:
-                result.append(Block(kind=BlockKind.TABLE, text="", rows=rows, page=page))
-
-    for index, block in enumerate(blocks):
-        previous_page = blocks[index - 1].page if index else block.page
-
-        if block.page != previous_page and previous_page not in pages_seen:
-            emit_tables_for(previous_page)
-            pages_seen.add(previous_page)
-
-        result.append(block)
-
-    last_page = blocks[-1].page if blocks else None
-
-    for page in sorted(tables_by_page):
-        if page not in pages_seen and (last_page is None or page >= last_page):
-            emit_tables_for(page)
-            pages_seen.add(page)
-
-    return result

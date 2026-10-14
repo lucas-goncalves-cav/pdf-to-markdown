@@ -35,6 +35,12 @@ class TestHealthAndDocs:
         assert response.json()["maxBytes"] > 0
         assert response.json()["maxPages"] > 0
 
+    def test_limits_say_whether_ocr_is_available(self) -> None:
+        payload = client.get("/api/limits").json()
+
+        assert isinstance(payload["ocrEnabled"], bool)
+        assert payload["ocrMaxPages"] >= 0
+
     def test_the_openapi_schema_is_generated(self) -> None:
         response = client.get("/openapi.json")
 
@@ -77,6 +83,21 @@ class TestConversionEndpoint:
 
         assert response.status_code == 200
 
+    def test_running_headers_are_stripped_by_default(self, running_text_pdf: bytes) -> None:
+        response = upload(running_text_pdf)
+
+        assert "Página 3 de 4" not in response.json()["content"]
+
+    def test_header_stripping_can_be_switched_off(self, running_text_pdf: bytes) -> None:
+        response = client.post(
+            "/api/convert",
+            files={"file": ("document.pdf", running_text_pdf, "application/pdf")},
+            data={"stripHeaders": "false"},
+        )
+
+        assert response.status_code == 200
+        assert "Página 3 de 4" in response.json()["content"]
+
     def test_downloading_returns_a_markdown_attachment(self, simple_pdf: bytes) -> None:
         response = client.post(
             "/api/convert/download",
@@ -106,6 +127,17 @@ class TestConversionEndpoint:
 
         assert response.status_code == 200
         assert response.json()["blocks"]
+        assert response.json()["warnings"] == []
+
+    def test_json_output_carries_tables_as_rows(self, table_pdf: bytes) -> None:
+        response = client.post(
+            "/api/convert/json",
+            files={"file": ("document.pdf", table_pdf, "application/pdf")},
+        )
+
+        tables = [block for block in response.json()["blocks"] if block["kind"] == "table"]
+
+        assert tables[0]["rows"][1] == ["Teacher", "20 hours", "R$ 2.565,32"]
 
     def test_an_unknown_output_format_is_rejected(self, simple_pdf: bytes) -> None:
         response = client.post(
