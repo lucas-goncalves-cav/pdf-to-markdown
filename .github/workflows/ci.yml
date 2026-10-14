@@ -28,6 +28,13 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
 
+      # The OCR tests skip themselves without tesseract, so CI installs it to
+      # make sure they run.
+      - name: Install tesseract
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-eng
+
       - name: Lint
         run: ruff check .
 
@@ -89,6 +96,12 @@ jobs:
           fi
 
           echo "Magic byte validation works."
+
+          # OCR_LANG defaults to por+eng in docker-compose, so the image has
+          # to carry both, and the API has to report OCR as available.
+          docker exec converter tesseract --list-langs | grep -qx por
+          curl -fsS http://localhost:8000/api/limits | grep -q '"ocrEnabled":true'
+          echo "OCR is available in the image."
 
       - name: Dump logs on failure
         if: failure()

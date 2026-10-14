@@ -7,11 +7,16 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 # Installed before the source so a code change does not invalidate the
-# dependency layer.
+# dependency layer. Tesseract, with English and Portuguese, reads scanned
+# pages; OCR_LANG picks which of the installed languages are used.
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt \
     && apt-get update \
-    && apt-get install -y --no-install-recommends curl \
+    && apt-get install -y --no-install-recommends \
+        curl \
+        tesseract-ocr \
+        tesseract-ocr-eng \
+        tesseract-ocr-por \
     && rm -rf /var/lib/apt/lists/*
 
 COPY app ./app
