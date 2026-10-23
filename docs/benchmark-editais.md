@@ -36,7 +36,11 @@ o Analyzer. Nenhum dos cinco tinha página escaneada; o OCR foi medido à parte 
 
 ## Antes e depois
 
-Mesma régua para o código da `main` (`8598547`) e o desta branch.
+Mesma régua para o código da `main` (`8598547`) e o desta branch. O script versionado mede o estado atual
+(coluna "depois") pelo NormalizedDocument; a `main` antiga não tem NormalizedDocument, então a coluna "antes"
+foi medida com a mesma contagem de palavras aplicada aos blocos do pipeline dela (`extract_document`,
+`strip_running_text`, `to_blocks`), sem spans. Nos dois lados, perda e duplicação são contadas no documento
+inteiro.
 
 | Edital | Perda antes | Perda depois | Duplicação antes | Duplicação depois | Títulos antes | Seções depois |
 |---|---|---|---|---|---|---|
