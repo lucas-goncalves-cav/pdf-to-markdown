@@ -304,6 +304,29 @@ class TestListDetection:
 
         assert [block.kind for block in blocks] == [BlockKind.LIST_ITEM, BlockKind.PARAGRAPH]
 
+    def test_a_title_opening_a_page_is_not_glued_to_the_page_before(self) -> None:
+        lines = [
+            TextLine("Código de Ética Médica: Resolução CFM nº 2.217/2018,", 11, False, 72, 752, 1),
+            TextLine("modificada pelas Resoluções nº 2.222/2018 e", 11, False, 72, 766, 1),
+            TextLine("2.226/2019, e demais normas do", 11, False, 72, 780, 1),
+            TextLine("Conselho Federal de Medicina.", 11, False, 72, 794, 1),
+            TextLine("ANEXO III - MODELO DE DECLARAÇÃO DO NÚCLEO FAMILIAR", 11, False, 72, 72, 2),
+            TextLine("Eu, declaro para os devidos fins que.", 11, False, 72, 100, 2),
+        ]
+
+        blocks = structure.to_blocks(lines)
+
+        assert blocks[1].kind is BlockKind.HEADING
+        assert blocks[1].text == "ANEXO III - MODELO DE DECLARAÇÃO DO NÚCLEO FAMILIAR"
+
+    def test_a_sentence_continuing_on_the_next_page_stays_one_paragraph(self) -> None:
+        lines = [
+            TextLine("O candidato deverá comparecer ao local de prova com", 11, False, 72, 794, 1),
+            TextLine("antecedência mínima de uma hora.", 11, False, 72, 72, 2),
+        ]
+
+        assert len(structure.to_blocks(lines)) == 1
+
     def test_a_numbered_title_in_capitals_is_a_heading_not_a_list(self) -> None:
         # How notices built in SEI set their sections: body size, not bold.
         blocks = structure.to_blocks(

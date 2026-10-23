@@ -209,15 +209,21 @@ def _tables_for_page(page, page_number: int) -> list[Table]:
 
     for table in found:
         extracted = table.extract()
-        rows, kept = clean_table_rows(extracted)
+        rows, kept, columns = clean_table_rows(extracted)
 
         if not rows:
             continue
 
         # extract() returns one row per detected row, in order, so the boxes
-        # line up with it before any empty row is dropped.
-        boxes = [tuple(row.bbox) for row in table.rows]
-        row_boxes = [boxes[index] for index in kept] if len(boxes) == len(extracted) else []
+        # line up with it before any empty row or column is dropped.
+        detected = table.rows
+        aligned = len(detected) == len(extracted)
+        row_boxes = [tuple(detected[index].bbox) for index in kept] if aligned else []
+        row_cell_boxes = (
+            [[_cell_box(detected[index].cells, column) for column in columns] for index in kept]
+            if aligned
+            else []
+        )
 
         tables.append(
             Table(
@@ -226,6 +232,7 @@ def _tables_for_page(page, page_number: int) -> list[Table]:
                 bbox=tuple(table.bbox),
                 row_boxes=row_boxes,
                 cell_boxes=[tuple(cell) for cell in table.cells],
+                row_cell_boxes=row_cell_boxes,
             )
         )
 
@@ -411,7 +418,17 @@ def _clean_table(table: list[list[str | None]]) -> list[list[str]]:
     return clean_table_rows(table)[0]
 
 
-def clean_table_rows(table: list[list[str | None]]) -> tuple[list[list[str]], list[int]]:
+def _cell_box(cells: list, column: int) -> tuple[float, float, float, float] | None:
+    """The box of one cell of a detected row; ``None`` where a merged cell left a gap."""
+
+    cell = cells[column] if column < len(cells) else None
+
+    return tuple(cell) if cell else None
+
+
+def clean_table_rows(
+    table: list[list[str | None]],
+) -> tuple[list[list[str]], list[int], list[int]]:
     """Normalise a table so every row has the same width and no ``None``.
 
     Empty rows and columns are dropped: merged cells leave whole columns of
@@ -419,12 +436,13 @@ def clean_table_rows(table: list[list[str | None]]) -> tuple[list[list[str]], li
     single column is a framed paragraph or list rather than tabular data, and
     reads better as ordinary text.
 
-    Returns the rows and, for each one, its index in ``table``, so the caller
-    can keep the position of every row that survived.
+    Returns the rows, the index in ``table`` of each row kept and the index of
+    each column kept, so the caller can keep the position of every cell that
+    survived.
     """
 
     if not table:
-        return [], []
+        return [], [], []
 
     width = max(len(row) for row in table)
     cleaned: list[list[str]] = []
@@ -440,11 +458,11 @@ def clean_table_rows(table: list[list[str | None]]) -> tuple[list[list[str]], li
 
     # A table where every cell is empty is a false positive from ruling lines.
     if not cleaned:
-        return [], []
+        return [], [], []
 
     filled = [index for index in range(width) if any(row[index] for row in cleaned)]
 
     if len(filled) < 2:
-        return [], []
+        return [], [], []
 
-    return [[row[index] for index in filled] for row in cleaned], kept
+    return [[row[index] for index in filled] for row in cleaned], kept, filled

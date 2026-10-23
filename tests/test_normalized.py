@@ -163,6 +163,18 @@ class TestProvenance:
         assert tops == sorted(tops)
         assert all(row["page"] == 1 for row in table["rows"])
 
+    def test_every_cell_keeps_its_box_inside_its_row(self, document: dict) -> None:
+        (table,) = document["tables"]
+
+        for row in table["rows"]:
+            assert len(row["cell_boxes"]) == len(row["cells"])
+            x0s = [box[0] for box in row["cell_boxes"]]
+            assert x0s == sorted(x0s)
+
+            for x0, top, x1, bottom in row["cell_boxes"]:
+                assert row["bbox"][0] - 1 <= x0 < x1 <= row["bbox"][2] + 1
+                assert row["bbox"][1] - 1 <= top < bottom <= row["bbox"][3] + 1
+
     def test_table_block_and_table_point_at_each_other(self, document: dict) -> None:
         (table,) = document["tables"]
         block = next(b for b in document["blocks"] if b["id"] == table["block_id"])

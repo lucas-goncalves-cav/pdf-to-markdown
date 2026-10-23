@@ -68,6 +68,12 @@ class Table:
     #: The box of every cell. Only text inside a cell belongs to the table:
     #: a table drawn past the page edge can enclose the page footer too.
     cell_boxes: list[tuple[float, float, float, float]] = field(default_factory=list)
+    #: For each row in ``rows``, the box of each of its cells, ``None`` where a
+    #: merged cell covers it. A reader lines a value up with its header by
+    #: position, the only way when merged cells shift the columns.
+    row_cell_boxes: list[list[tuple[float, float, float, float] | None]] = field(
+        default_factory=list
+    )
 
     @property
     def top(self) -> float:
@@ -106,6 +112,18 @@ class ExtractedDocument:
     metadata: dict[str, str] = field(default_factory=dict)
 
 
+Box = tuple[float, float, float, float]
+
+
+@dataclass
+class RowRef:
+    """Where one row of a table block sits: its page, its box and its cells' boxes."""
+
+    page: int
+    box: Box | None = None
+    cells: list[Box | None] = field(default_factory=list)
+
+
 @dataclass
 class Block:
     """A converted chunk of the document, ready to be rendered as Markdown."""
@@ -125,11 +143,9 @@ class Block:
     #: For a table block, the table on each page it spans: one, or several
     #: when a page break split it.
     tables: list[Table] = field(default_factory=list)
-    #: For a table block, the page and box of each row in ``rows``. The box is
-    #: ``None`` when the table detector did not report one.
-    row_refs: list[tuple[int, tuple[float, float, float, float] | None]] = field(
-        default_factory=list
-    )
+    #: For a table block, where each row in ``rows`` sits. The boxes are
+    #: ``None`` when the table detector did not report them.
+    row_refs: list[RowRef] = field(default_factory=list)
 
 
 @dataclass

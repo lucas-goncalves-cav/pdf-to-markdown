@@ -285,7 +285,7 @@ def _spans(block: Block) -> tuple[list[dict], str]:
 
 
 def _table(block: Block, table_id: str, block_id: str, section_id: str | None) -> dict:
-    pages = [page for page, _box_ in block.row_refs] or [block.page]
+    pages = [ref.page for ref in block.row_refs] or [block.page]
 
     return {
         "id": table_id,
@@ -296,8 +296,17 @@ def _table(block: Block, table_id: str, block_id: str, section_id: str | None) -
         "column_count": len(block.rows[0]) if block.rows else 0,
         "row_count": len(block.rows),
         "rows": [
-            {"cells": row, "page": page, "bbox": _box(box) if box else None}
-            for row, (page, box) in zip(block.rows, block.row_refs, strict=True)
+            {
+                "cells": row,
+                "page": ref.page,
+                "bbox": _box(ref.box) if ref.box else None,
+                "cell_boxes": (
+                    [_box(cell) if cell else None for cell in ref.cells]
+                    if len(ref.cells) == len(row)
+                    else [None] * len(row)
+                ),
+            }
+            for row, ref in zip(block.rows, block.row_refs, strict=True)
         ],
     }
 

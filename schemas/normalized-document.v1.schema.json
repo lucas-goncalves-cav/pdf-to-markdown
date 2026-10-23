@@ -315,11 +315,16 @@
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["cells", "page", "bbox"],
+            "required": ["cells", "page", "bbox", "cell_boxes"],
             "properties": {
               "cells": { "type": "array", "items": { "type": "string" } },
               "page": { "type": "integer", "minimum": 1 },
-              "bbox": { "oneOf": [{ "$ref": "#/$defs/bbox" }, { "type": "null" }] }
+              "bbox": { "oneOf": [{ "$ref": "#/$defs/bbox" }, { "type": "null" }] },
+              "cell_boxes": {
+                "type": "array",
+                "description": "One per cell, in the order of cells; null where a merged cell covers it. Lets a reader line a value up with its header by position when merged cells shift the columns.",
+                "items": { "oneOf": [{ "$ref": "#/$defs/bbox" }, { "type": "null" }] }
+              }
             }
           }
         }

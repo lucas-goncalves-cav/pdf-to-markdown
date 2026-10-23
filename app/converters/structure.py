@@ -15,7 +15,7 @@ from collections.abc import Iterator
 from dataclasses import replace
 from itertools import pairwise
 
-from app.converters.models import Block, BlockKind, Table, TextLine
+from app.converters.models import Block, BlockKind, RowRef, Table, TextLine
 
 #: A line has to be this much larger than body text before size alone is taken
 #: as evidence of a heading. Below it, ordinary variation in a paragraph would
@@ -281,6 +281,12 @@ def starts_new_paragraph(previous: TextLine, line: TextLine, pitch: float | None
     if abs(line.font_size - previous.font_size) > FONT_SIZE_TOLERANCE:
         return True
 
+    # A line in capitals opening a page is a title, "ANEXO III - MODELO DE
+    # DECLARAÇÃO", not the end of the last sentence of the page before. On a
+    # real notice every annex after the first was glued to the text above it.
+    if line.page != previous.page and _is_capitalised(line.text) and len(line.text.split()) >= 2:
+        return True
+
     # A clause number after a finished sentence opens the next clause. The
     # punctuation check matters: "nos termos do subitem" followed by a line
     # starting "2.6.4 deste edital" is one sentence wrapped.
@@ -319,11 +325,12 @@ def continues_list_item(previous: Block, line: TextLine, pitch: float | None) ->
     return not starts_new_paragraph(last, line, pitch)
 
 
-def _row_refs(table: Table) -> list[tuple[int, tuple[float, float, float, float] | None]]:
-    if len(table.row_boxes) == len(table.rows):
-        return [(table.page, box) for box in table.row_boxes]
+def _row_refs(table: Table) -> list[RowRef]:
+    count = len(table.rows)
+    boxes = table.row_boxes if len(table.row_boxes) == count else [None] * count
+    cells = table.row_cell_boxes if len(table.row_cell_boxes) == count else [[]] * count
 
-    return [(table.page, None) for _ in table.rows]
+    return [RowRef(table.page, box, list(row)) for box, row in zip(boxes, cells, strict=True)]
 
 
 def _in_reading_order(lines: list[TextLine], tables: list[Table]) -> Iterator[TextLine | Table]:
