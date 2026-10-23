@@ -4,18 +4,20 @@ from __future__ import annotations
 
 import logging
 import os
+import uuid
 from typing import Literal
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
 from app.api.validation import UploadLimits, UploadRejected, safe_output_name, validate_upload
 from app.converters import ocr as ocr_engine
 from app.converters import pipeline
 from app.converters.extractor import PdfExtractionError
+from app.normalized import normalize
 from app.web import INDEX_HTML
 
 logging.basicConfig(
@@ -163,6 +165,85 @@ async def convert(
         blockCount=result.block_count,
         warnings=result.warnings,
     )
+
+
+@app.post(
+    "/api/normalized-document",
+    tags=["Conversion"],
+    summary="Converts a PDF into a NormalizedDocument v1",
+    description=(
+        "The machine contract: ordered blocks, tables and sections, each traceable to a "
+        "page and a box, with a quality gate. Schema in "
+        "`schemas/normalized-document.v1.schema.json`. The same PDF converted the same way "
+        "always has the same `document_id`."
+    ),
+    responses={
+        400: {"description": "The upload failed validation."},
+        422: {"description": "The file is a PDF but could not be read."},
+    },
+)
+async def normalized_document(
+    request: Request,
+    file: UploadFile = File(description="The PDF to convert."),
+    source_uri: str | None = Form(
+        None,
+        alias="sourceUri",
+        max_length=2048,
+        description="Where the PDF came from, kept as provenance. Not fetched.",
+    ),
+    include_tables: bool = Form(True, alias="includeTables"),
+    strip_headers: bool = Form(True, alias="stripHeaders"),
+) -> JSONResponse:
+    # Callers pass their own id so a conversion can be found in both logs.
+    correlation_id = _correlation_id(request.headers.get("X-Correlation-Id"))
+    data = await _read_and_validate(file)
+
+    if source_uri is not None and not source_uri.startswith(("https://", "http://")):
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "invalid_source_uri", "message": "sourceUri must be an http(s) URL."},
+        )
+
+    try:
+        document = await run_in_threadpool(
+            normalize,
+            data,
+            source_uri=source_uri,
+            filename=safe_output_name(file.filename or "document.pdf").removesuffix(".md") + ".pdf",
+            include_tables=include_tables,
+            strip_headers=strip_headers,
+            max_pages=LIMITS.max_pages,
+            ocr=OCR,
+        )
+    except PdfExtractionError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+    quality = document["quality"]
+    logger.info(
+        "Normalized %s as %s: %s, %d pages, %d blocks, coverage %s. correlation_id=%s",
+        document["source"]["content_hash"],
+        document["document_id"],
+        quality["status"],
+        quality["pages_converted"],
+        quality["block_count"],
+        quality["text_coverage"],
+        correlation_id,
+    )
+
+    return JSONResponse(document, headers={"X-Correlation-Id": correlation_id})
+
+
+def _correlation_id(value: str | None) -> str:
+    """The caller's id when it is a sane token, a new one otherwise.
+
+    It ends up in logs and a response header, so anything else is replaced
+    rather than echoed.
+    """
+
+    if value and len(value) <= 128 and all(c.isalnum() or c in "-_.:" for c in value):
+        return value
+
+    return uuid.uuid4().hex
 
 
 @app.post(

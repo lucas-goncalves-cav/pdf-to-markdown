@@ -271,6 +271,71 @@ class TestListDetection:
 
         assert blocks[0].kind is BlockKind.PARAGRAPH
 
+    def test_a_lettered_item_keeps_its_letter(self) -> None:
+        # A notice refers to "alínea b", so the letter is content. Dropping it
+        # was most of the text a real notice lost in the benchmark.
+        blocks = structure.to_blocks(
+            [self.line("3.2 São requisitos:"), self.line("b) ter 18 anos completos;", x0=90)]
+        )
+
+        assert blocks[1].kind is BlockKind.LIST_ITEM
+        assert blocks[1].text == "b) ter 18 anos completos;"
+
+    def test_a_wrapped_item_is_rejoined(self) -> None:
+        lines = [
+            TextLine("• Ser brasileiro nato ou naturalizado, em condição de igualdade com", 11, False, 90, 100, 1),
+            TextLine("os brasileiros, na forma da Constituição;", 11, False, 72, 114, 1),
+            TextLine("• Gozar dos direitos políticos;", 11, False, 90, 128, 1),
+        ]
+
+        blocks = structure.to_blocks(lines)
+
+        assert [block.kind for block in blocks] == [BlockKind.LIST_ITEM, BlockKind.LIST_ITEM]
+        assert blocks[0].text.endswith("em condição de igualdade com os brasileiros, na forma da Constituição;")
+        assert len(blocks[0].lines) == 2
+
+    def test_a_finished_item_is_not_continued_by_the_next_paragraph(self) -> None:
+        lines = [
+            TextLine("• Escolaridade mínima exigida para o cargo.", 11, False, 90, 100, 1),
+            TextLine("O candidato que não reunir os requisitos perderá o direito.", 11, False, 72, 114, 1),
+        ]
+
+        blocks = structure.to_blocks(lines)
+
+        assert [block.kind for block in blocks] == [BlockKind.LIST_ITEM, BlockKind.PARAGRAPH]
+
+    def test_a_title_opening_a_page_is_not_glued_to_the_page_before(self) -> None:
+        lines = [
+            TextLine("Código de Ética Médica: Resolução CFM nº 2.217/2018,", 11, False, 72, 752, 1),
+            TextLine("modificada pelas Resoluções nº 2.222/2018 e", 11, False, 72, 766, 1),
+            TextLine("2.226/2019, e demais normas do", 11, False, 72, 780, 1),
+            TextLine("Conselho Federal de Medicina.", 11, False, 72, 794, 1),
+            TextLine("ANEXO III - MODELO DE DECLARAÇÃO DO NÚCLEO FAMILIAR", 11, False, 72, 72, 2),
+            TextLine("Eu, declaro para os devidos fins que.", 11, False, 72, 100, 2),
+        ]
+
+        blocks = structure.to_blocks(lines)
+
+        assert blocks[1].kind is BlockKind.HEADING
+        assert blocks[1].text == "ANEXO III - MODELO DE DECLARAÇÃO DO NÚCLEO FAMILIAR"
+
+    def test_a_sentence_continuing_on_the_next_page_stays_one_paragraph(self) -> None:
+        lines = [
+            TextLine("O candidato deverá comparecer ao local de prova com", 11, False, 72, 794, 1),
+            TextLine("antecedência mínima de uma hora.", 11, False, 72, 72, 2),
+        ]
+
+        assert len(structure.to_blocks(lines)) == 1
+
+    def test_a_numbered_title_in_capitals_is_a_heading_not_a_list(self) -> None:
+        # How notices built in SEI set their sections: body size, not bold.
+        blocks = structure.to_blocks(
+            [self.line("1. DAS DISPOSIÇÕES PRELIMINARES"), self.line("1.1 O concurso será regido.")]
+        )
+
+        assert blocks[0].kind is BlockKind.HEADING
+        assert blocks[0].text == "1. DAS DISPOSIÇÕES PRELIMINARES"
+
 
 class TestParagraphJoining:
     def test_wrapped_lines_become_one_paragraph(self, wrapped_paragraph_pdf: bytes) -> None:
@@ -587,6 +652,39 @@ class TestRunningText:
 
         assert removed == 0
         assert len(kept) == 3
+
+    def test_a_footer_ending_in_a_bare_page_number_is_removed(self) -> None:
+        # From a real notice: nothing says "página", the number just follows
+        # the page, one behind it because the cover is not numbered.
+        heights = {page: 842 for page in range(1, 6)}
+        lines = []
+
+        for page in range(1, 6):
+            lines.append(body(f"Texto do corpo da página {page}.", 400, page=page))
+            lines.append(body(f"MINISTÉRIO PÚBLICO | CONCURSO PÚBLICO {page - 1}", 800, page=page))
+
+        kept, removed = furniture.strip_running_text(lines, heights)
+
+        assert removed == 4
+        assert [line.text for line in kept if "MINISTÉRIO" in line.text] == [
+            "MINISTÉRIO PÚBLICO | CONCURSO PÚBLICO 0"
+        ]
+
+    def test_numbers_that_do_not_follow_the_page_are_not_page_numbers(self) -> None:
+        heights = {page: 842 for page in range(1, 5)}
+        lines = [body(f"Tabela {n}", 800, page=page) for page, n in ((1, 7), (2, 3), (3, 9), (4, 1))]
+
+        _kept, removed = furniture.strip_running_text(lines, heights)
+
+        assert removed == 0
+
+    def test_chapter_numbers_at_the_top_still_count(self) -> None:
+        heights = {page: 842 for page in range(1, 5)}
+        lines = [body(f"Chapter {page}", 60, page=page) for page in range(1, 5)]
+
+        _kept, removed = furniture.strip_running_text(lines, heights)
+
+        assert removed == 0
 
 
 class TestTextCleanup:

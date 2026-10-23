@@ -38,6 +38,8 @@ ignore = [
 # them as "ambiguous" is exactly backwards for a module whose job is to
 # recognise them.
 "app/converters/structure.py" = ["RUF001"]
+# Section numbers are followed by en and em dashes in real notices, "ANEXO II – ...".
+"app/normalized/builder.py" = ["RUF001"]
 # A single embedded HTML document, where reflowing lines would hurt more than
 # the line length rule helps.
 "app/web.py" = ["E501"]

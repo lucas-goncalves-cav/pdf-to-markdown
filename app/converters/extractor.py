@@ -42,6 +42,10 @@ MULTIPLE_SPACES = re.compile("[ \\t\\u00a0]{2,}")
 SCANNED_IMAGE_COVERAGE = 0.5
 SCANNED_MAX_CHARS = 200
 
+#: Sideways text in at most this many lines is a stamp in the margin rather
+#: than content, and is left out.
+MAX_STAMP_COLUMNS = 4
+
 
 class PdfExtractionError(Exception):
     """The file could not be opened or read as a PDF."""
@@ -63,6 +67,10 @@ def extract_document(
     lines: list[TextLine] = []
     tables: list[Table] = []
     heights: dict[int, float] = {}
+    widths: dict[int, float] = {}
+    page_chars: dict[int, int] = {}
+    rotated: dict[int, int] = {}
+    turned_pages: list[int] = []
     scanned: list[int] = []
     ocr_pages: list[int] = []
 
@@ -72,9 +80,12 @@ def extract_document(
         with pdfplumber.open(io.BytesIO(data)) as pdf:
             page_count = len(pdf.pages)
             pages = pdf.pages if max_pages is None else pdf.pages[:max_pages]
+            metadata = _metadata(pdf.metadata)
 
             for page_number, page in enumerate(pages, start=1):
                 heights[page_number] = float(page.height)
+                widths[page_number] = float(page.width)
+                page_chars[page_number] = sum(1 for char in page.chars if char["text"].isalnum())
 
                 if looks_scanned(page):
                     scanned.append(page_number)
@@ -85,10 +96,16 @@ def extract_document(
                         continue
 
                 page_tables = _tables_for_page(page, page_number) if include_tables else []
-                regions = [table.bbox for table in page_tables]
+
+                page_lines, sideways = _lines_for_page(page, page_number, exclude=page_tables)
 
                 tables.extend(page_tables)
-                lines.extend(_lines_for_page(page, page_number, exclude=regions))
+                lines.extend(page_lines)
+
+                if sideways > 0:
+                    rotated[page_number] = sideways
+                elif sideways < 0:
+                    turned_pages.append(page_number)
     except PdfExtractionError:
         raise
     except Exception as error:  # pragma: no cover - depends on the file
@@ -101,7 +118,24 @@ def extract_document(
         page_heights=heights,
         scanned_pages=scanned,
         ocr_pages=ocr_pages,
+        page_widths=widths,
+        page_chars=page_chars,
+        rotated_chars=rotated,
+        turned_pages=turned_pages,
+        metadata=metadata,
     )
+
+
+def _metadata(info: dict | None) -> dict[str, str]:
+    """The text entries of the information dictionary, the rest being binary noise."""
+
+    keep = ("Title", "Author", "Subject", "Creator", "Producer", "CreationDate", "ModDate")
+
+    return {
+        key: str(info[key]).strip()
+        for key in keep
+        if info and isinstance(info.get(key), str) and str(info[key]).strip()
+    }
 
 
 def extract_lines(data: bytes, max_pages: int | None = None) -> list[TextLine]:
@@ -174,28 +208,74 @@ def _tables_for_page(page, page_number: int) -> list[Table]:
     tables: list[Table] = []
 
     for table in found:
-        rows = _clean_table(table.extract())
+        extracted = table.extract()
+        rows, kept, columns = clean_table_rows(extracted)
 
-        if rows:
-            tables.append(Table(rows=rows, page=page_number, bbox=tuple(table.bbox)))
+        if not rows:
+            continue
+
+        # extract() returns one row per detected row, in order, so the boxes
+        # line up with it before any empty row or column is dropped.
+        detected = table.rows
+        aligned = len(detected) == len(extracted)
+        row_boxes = [tuple(detected[index].bbox) for index in kept] if aligned else []
+        row_cell_boxes = (
+            [[_cell_box(detected[index].cells, column) for column in columns] for index in kept]
+            if aligned
+            else []
+        )
+
+        tables.append(
+            Table(
+                rows=rows,
+                page=page_number,
+                bbox=tuple(table.bbox),
+                row_boxes=row_boxes,
+                cell_boxes=[tuple(cell) for cell in table.cells],
+                row_cell_boxes=row_cell_boxes,
+            )
+        )
 
     return tables
 
 
-def _lines_for_page(page, page_number: int, exclude: list[tuple] | None = None) -> list[TextLine]:
+def _lines_for_page(
+    page, page_number: int, exclude: list[Table] | None = None
+) -> tuple[list[TextLine], int]:
     """Group a page's characters into lines, carrying font metadata along.
 
-    Characters inside an ``exclude`` box belong to a table that is rendered
-    separately, so they are left out here.
+    Characters inside a cell of an ``exclude`` table belong to the table,
+    which is rendered separately, so they are left out here.
+
+    Returns the lines and how many letters and digits were left out because
+    they were set sideways, or a negative count of sideways characters that
+    were kept as content.
     """
 
     characters = page.chars
 
     if exclude:
-        characters = [char for char in characters if not _inside_any(char, exclude)]
+        characters = [char for char in characters if not _in_a_table(char, exclude)]
+
+    # Text set on its side is usually a stamp in the margin, the digital
+    # signature notice a signing tool adds to every page. Grouped by height
+    # like the rest, each of its letters became a line of its own, scattered
+    # through the paragraphs beside it. A stamp is a strip, one to a few
+    # sideways lines; a landscape annex turned on the page has dozens, and is
+    # content: keeping it badly ordered beats losing it.
+    turned = [char for char in characters if not char.get("upright", True)]
+    sideways = 0
+
+    if turned and len({round(char["x0"] / 3) for char in turned}) <= MAX_STAMP_COLUMNS:
+        sideways = sum(1 for char in turned if char["text"].isalnum())
+        characters = [char for char in characters if char.get("upright", True)]
+    elif turned:
+        # Kept, but grouped by height it reads a letter at a time. The caller
+        # is told, so the page can be read from the PDF instead.
+        sideways = -len(turned)
 
     if not characters:
-        return []
+        return [], sideways
 
     # Characters arrive in drawing order, which is not always reading order.
     # Sorting by vertical then horizontal position restores it.
@@ -236,10 +316,27 @@ def _lines_for_page(page, page_number: int, exclude: list[tuple] | None = None) 
                     char["top"] for char in chars if round(char["size"], 1) == font_size
                 ),
                 page=page_number,
+                x1=max(char["x1"] for char in chars),
+                bottom=max(char["bottom"] for char in chars),
             )
         )
 
-    return lines
+    return lines, sideways
+
+
+def _in_a_table(char: dict, tables: list[Table]) -> bool:
+    """Whether a character sits in a cell of one of the tables.
+
+    The table's box is checked first, which settles most characters cheaply.
+    Inside it, only a cell counts: a table drawn past the page edge encloses
+    the page footer, which is not in any cell and would otherwise be lost.
+    """
+
+    return any(
+        _inside_any(char, [table.bbox])
+        and (not table.cell_boxes or _inside_any(char, table.cell_boxes))
+        for table in tables
+    )
 
 
 def _inside_any(char: dict, boxes: list[tuple]) -> bool:
@@ -318,34 +415,54 @@ def _is_bold(char: dict) -> bool:
 
 
 def _clean_table(table: list[list[str | None]]) -> list[list[str]]:
+    return clean_table_rows(table)[0]
+
+
+def _cell_box(cells: list, column: int) -> tuple[float, float, float, float] | None:
+    """The box of one cell of a detected row; ``None`` where a merged cell left a gap."""
+
+    cell = cells[column] if column < len(cells) else None
+
+    return tuple(cell) if cell else None
+
+
+def clean_table_rows(
+    table: list[list[str | None]],
+) -> tuple[list[list[str]], list[int], list[int]]:
     """Normalise a table so every row has the same width and no ``None``.
 
     Empty rows and columns are dropped: merged cells leave whole columns of
     ``None`` behind. What is left has to have at least two columns, because a
     single column is a framed paragraph or list rather than tabular data, and
     reads better as ordinary text.
+
+    Returns the rows, the index in ``table`` of each row kept and the index of
+    each column kept, so the caller can keep the position of every cell that
+    survived.
     """
 
     if not table:
-        return []
+        return [], [], []
 
     width = max(len(row) for row in table)
     cleaned: list[list[str]] = []
+    kept: list[int] = []
 
-    for row in table:
+    for index, row in enumerate(table):
         normalised = [(cell or "").replace("\n", " ").strip() for cell in row]
         normalised.extend([""] * (width - len(normalised)))
 
         if any(normalised):
             cleaned.append(normalised)
+            kept.append(index)
 
     # A table where every cell is empty is a false positive from ruling lines.
     if not cleaned:
-        return []
+        return [], [], []
 
     filled = [index for index in range(width) if any(row[index] for row in cleaned)]
 
     if len(filled) < 2:
-        return []
+        return [], [], []
 
-    return [[row[index] for index in filled] for row in cleaned]
+    return [[row[index] for index in filled] for row in cleaned], kept, filled

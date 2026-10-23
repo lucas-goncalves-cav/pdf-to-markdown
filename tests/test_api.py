@@ -48,6 +48,57 @@ class TestHealthAndDocs:
         assert "/api/convert" in response.json()["paths"]
 
 
+class TestNormalizedDocumentEndpoint:
+    @staticmethod
+    def post(data: bytes, *, headers: dict | None = None, **form):
+        return client.post(
+            "/api/normalized-document",
+            files={"file": ("../../edital final.pdf", data, "application/pdf")},
+            data=form,
+            headers=headers or {},
+        )
+
+    def test_returns_the_contract(self, simple_pdf: bytes) -> None:
+        response = self.post(simple_pdf, sourceUri="https://example.gov.br/edital.pdf")
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["schema"] == "normalized-document"
+        assert payload["source"]["uri"] == "https://example.gov.br/edital.pdf"
+        assert payload["source"]["filename"] == "edital final.pdf"
+        assert payload["blocks"][0]["text"] == "Quarterly Report"
+
+    def test_the_api_limit_does_not_change_the_document_id(self, simple_pdf: bytes) -> None:
+        from app.normalized import normalize
+
+        response = self.post(simple_pdf)
+
+        assert response.json()["document_id"] == normalize(simple_pdf)["document_id"]
+
+    def test_echoes_the_callers_correlation_id(self, simple_pdf: bytes) -> None:
+        response = self.post(simple_pdf, headers={"X-Correlation-Id": "corr-123"})
+
+        assert response.headers["X-Correlation-Id"] == "corr-123"
+
+    def test_replaces_a_correlation_id_it_should_not_echo(self, simple_pdf: bytes) -> None:
+        response = self.post(simple_pdf, headers={"X-Correlation-Id": "bad id\twith spaces"})
+
+        assert response.headers["X-Correlation-Id"] != "bad id\twith spaces"
+        assert len(response.headers["X-Correlation-Id"]) == 32
+
+    def test_rejects_a_source_that_is_not_a_url(self, simple_pdf: bytes) -> None:
+        response = self.post(simple_pdf, sourceUri="file:///etc/passwd")
+
+        assert response.status_code == 400
+        assert response.json()["detail"]["code"] == "invalid_source_uri"
+
+    def test_validates_the_upload_like_every_other_route(self, not_a_pdf: bytes) -> None:
+        response = self.post(not_a_pdf)
+
+        assert response.status_code == 400
+        assert response.json()["detail"]["code"] == "not_a_pdf"
+
+
 class TestConversionEndpoint:
     def test_converts_a_pdf(self, simple_pdf: bytes) -> None:
         response = upload(simple_pdf)

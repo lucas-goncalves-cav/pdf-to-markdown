@@ -12,9 +12,10 @@ import re
 import unicodedata
 from collections import Counter
 from collections.abc import Iterator
+from dataclasses import replace
 from itertools import pairwise
 
-from app.converters.models import Block, BlockKind, Table, TextLine
+from app.converters.models import Block, BlockKind, RowRef, Table, TextLine
 
 #: A line has to be this much larger than body text before size alone is taken
 #: as evidence of a heading. Below it, ordinary variation in a paragraph would
@@ -39,7 +40,7 @@ BULLET_CHARACTERS = "•◦‣⁃∙·●○–—*-"
 
 _BULLET_PATTERN = re.compile(rf"^\s*[{re.escape(BULLET_CHARACTERS)}]\s+(?P<text>.+)$")
 _ORDERED_PATTERN = re.compile(r"^\s*(?P<marker>\d{1,3})[.)]\s+(?P<text>.+)$")
-_LETTER_PATTERN = re.compile(r"^\s*(?P<marker>[a-zA-Z])[.)]\s+(?P<text>.+)$")
+_LETTER_PATTERN = re.compile(r"^\s*(?P<marker>[a-zA-Z][.)])\s+(?P<text>.+)$")
 
 #: A numbered heading: "2.1 Scope", "2.1.3. Detail", or a single number with
 #: an explicit separator, "8. HABILITAÇÃO" or "8 - HABILITAÇÃO". A bare
@@ -166,6 +167,7 @@ def to_blocks(lines: list[TextLine], tables: list[Table] | None = None) -> list[
                     text=paragraph[0].text.strip(),
                     level=minor_level,
                     page=paragraph[0].page,
+                    lines=list(paragraph),
                 )
             )
         else:
@@ -174,6 +176,7 @@ def to_blocks(lines: list[TextLine], tables: list[Table] | None = None) -> list[
                     kind=BlockKind.PARAGRAPH,
                     text=_join_wrapped(paragraph),
                     page=paragraph[0].page,
+                    lines=list(paragraph),
                 )
             )
 
@@ -194,10 +197,18 @@ def to_blocks(lines: list[TextLine], tables: list[Table] | None = None) -> list[
                 and len(item.rows[0]) == len(open_table.rows[0])
             ):
                 repeats_header = item.rows[0] == open_table.rows[0]
-                open_table.rows.extend(item.rows[1:] if repeats_header else item.rows)
+                skip = 1 if repeats_header else 0
+                open_table.rows.extend(item.rows[skip:])
+                open_table.row_refs.extend(_row_refs(item)[skip:])
+                open_table.tables.append(item)
             else:
                 open_table = Block(
-                    kind=BlockKind.TABLE, text="", rows=list(item.rows), page=item.page
+                    kind=BlockKind.TABLE,
+                    text="",
+                    rows=list(item.rows),
+                    page=item.page,
+                    tables=[item],
+                    row_refs=_row_refs(item),
                 )
                 blocks.append(open_table)
 
@@ -214,6 +225,7 @@ def to_blocks(lines: list[TextLine], tables: list[Table] | None = None) -> list[
 
         if heading is not None:
             flush_paragraph()
+            heading.lines = [line]
             blocks.append(heading)
             continue
 
@@ -221,7 +233,32 @@ def to_blocks(lines: list[TextLine], tables: list[Table] | None = None) -> list[
 
         if list_item is not None:
             flush_paragraph()
+
+            # "1. DAS INSCRIÇÕES" in capitals at body size is how many notices
+            # set their section titles, and it is not the first item of a list.
+            if _NUMBERED_HEADING.match(line.text) and _is_capitalised_title(line, body_size):
+                blocks.append(
+                    Block(
+                        kind=BlockKind.HEADING,
+                        text=line.text.strip(),
+                        level=minor_level,
+                        page=line.page,
+                        lines=[line],
+                    )
+                )
+                continue
+
+            # The block's line carries the text as the block shows it, so a
+            # wrapped item can be rejoined, and its offsets kept, like a
+            # paragraph's.
+            list_item.lines = [replace(line, text=list_item.text)]
             blocks.append(list_item)
+            continue
+
+        if not paragraph and blocks and continues_list_item(blocks[-1], line, pitch):
+            item = blocks[-1]
+            item.lines.append(line)
+            item.text = _join_wrapped(item.lines)
             continue
 
         if paragraph and starts_new_paragraph(paragraph[-1], line, pitch):
@@ -244,6 +281,12 @@ def starts_new_paragraph(previous: TextLine, line: TextLine, pitch: float | None
     if abs(line.font_size - previous.font_size) > FONT_SIZE_TOLERANCE:
         return True
 
+    # A line in capitals opening a page is a title, "ANEXO III - MODELO DE
+    # DECLARAÇÃO", not the end of the last sentence of the page before. On a
+    # real notice every annex after the first was glued to the text above it.
+    if line.page != previous.page and _is_capitalised(line.text) and len(line.text.split()) >= 2:
+        return True
+
     # A clause number after a finished sentence opens the next clause. The
     # punctuation check matters: "nos termos do subitem" followed by a line
     # starting "2.6.4 deste edital" is one sentence wrapped.
@@ -256,6 +299,38 @@ def starts_new_paragraph(previous: TextLine, line: TextLine, pitch: float | None
         return line.top - previous.top > pitch * PARAGRAPH_GAP_RATIO
 
     return False
+
+
+def continues_list_item(previous: Block, line: TextLine, pitch: float | None) -> bool:
+    """Whether ``line`` is the wrapped end of the list item before it.
+
+    A notice wraps long items, "a) ser brasileiro nato ou naturalizado ou
+    cidadão português em condição de igualdade de direitos com" over "os
+    brasileiros; ...", and splitting the two halves cuts a requirement in two.
+    An item that already ended its sentence is finished, though, and what
+    follows it is a paragraph of its own.
+    """
+
+    if previous.kind is not BlockKind.LIST_ITEM or not previous.lines:
+        return False
+
+    if previous.text.rstrip().endswith((".", ";", ":", "!", "?")):
+        return False
+
+    last = previous.lines[-1]
+
+    if line.page not in (last.page, last.page + 1):
+        return False
+
+    return not starts_new_paragraph(last, line, pitch)
+
+
+def _row_refs(table: Table) -> list[RowRef]:
+    count = len(table.rows)
+    boxes = table.row_boxes if len(table.row_boxes) == count else [None] * count
+    cells = table.row_cell_boxes if len(table.row_cell_boxes) == count else [[]] * count
+
+    return [RowRef(table.page, box, list(row)) for box, row in zip(boxes, cells, strict=True)]
 
 
 def _in_reading_order(lines: list[TextLine], tables: list[Table]) -> Iterator[TextLine | Table]:
@@ -394,9 +469,11 @@ def _as_list_item(line: TextLine, indent_base: float) -> Block | None:
     # a list item, but so is the start of many sentences. Requiring an indent
     # keeps false positives down.
     if lettered and line.x0 > indent_base + 5:
+        # The letter stays: a notice refers to "alínea b" of an item, so it
+        # is content, not decoration like a bullet glyph.
         return Block(
             kind=BlockKind.LIST_ITEM,
-            text=lettered.group("text").strip(),
+            text=f"{lettered.group('marker')} {lettered.group('text').strip()}",
             indent=_indent_level(line, indent_base),
             page=line.page,
         )
@@ -421,21 +498,38 @@ def _indent_level(line: TextLine, base: float) -> int:
 
 
 def _join_wrapped(lines: list[TextLine]) -> str:
+    return join_wrapped(lines)[0]
+
+
+def join_wrapped(lines: list[TextLine]) -> tuple[str, list[tuple[int, int]]]:
     """Rejoin lines that a PDF wrapped mid sentence.
 
     A PDF stores every visual line separately, so a paragraph arrives as five
     lines. Joining them with spaces restores the sentence, and a hyphen at a
     line end means the word itself was split.
+
+    Returns the text and, for each line, the ``(start, end)`` range of the
+    text that came from it, which is how a quote from the paragraph finds its
+    way back to a line on the page. A word rejoined across a hyphen is split
+    between the two ranges where the hyphen was.
     """
 
-    parts: list[str] = []
+    text = ""
+    spans: list[tuple[int, int]] = []
 
     for line in lines:
-        text = line.text.strip()
+        piece = line.text.strip()
 
-        if parts and parts[-1].endswith("-") and not parts[-1].endswith("--"):
-            parts[-1] = parts[-1][:-1] + text
+        if text.endswith("-") and not text.endswith("--"):
+            text = text[:-1]
+            start = len(text)
+            spans[-1] = (spans[-1][0], len(text))
         else:
-            parts.append(text)
+            if text and piece:
+                text += " "
+            start = len(text)
 
-    return " ".join(part for part in parts if part).strip()
+        text += piece
+        spans.append((start, len(text)))
+
+    return text, spans

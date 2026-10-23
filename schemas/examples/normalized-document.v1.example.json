@@ -1,0 +1,445 @@
+{
+  "schema": "normalized-document",
+  "schema_version": "1.0.0",
+  "document_id": "nd_576c6e4ac43e421e896a2c01894c186b",
+  "normalized_content_hash": "sha256:c4e593296fa685b4148c98481427c92f196336d6fa8ca66876e3e9a5b76f4f8f",
+  "generated_at": "2026-10-22T12:00:00Z",
+  "coordinates": {
+    "unit": "pt",
+    "origin": "top-left",
+    "bbox": "x0,top,x1,bottom"
+  },
+  "source": {
+    "content_hash": "sha256:f97bf2b68e9a547c10b2eba7ef10e7f54f33b3dd3f5c60f631bb55517e84d858",
+    "size_bytes": 2574,
+    "media_type": "application/pdf",
+    "filename": "edital-exemplo.pdf",
+    "uri": "https://example.gov.br/edital-exemplo.pdf",
+    "page_count": 2,
+    "metadata": {
+      "Title": "untitled",
+      "Author": "anonymous",
+      "Subject": "unspecified",
+      "Creator": "anonymous",
+      "Producer": "ReportLab PDF Library - (opensource)",
+      "CreationDate": "D:20000101000000+00'00'",
+      "ModDate": "D:20000101000000+00'00'"
+    }
+  },
+  "converter": {
+    "name": "pdf-to-markdown",
+    "version": "1.1.0",
+    "options": {
+      "include_tables": true,
+      "strip_headers": true,
+      "max_pages": null,
+      "ocr": {
+        "requested": false,
+        "available": false,
+        "languages": null
+      }
+    }
+  },
+  "quality": {
+    "status": "ok",
+    "pages_total": 2,
+    "pages_converted": 2,
+    "pages_text_layer": 2,
+    "pages_ocr": 0,
+    "pages_unread": 0,
+    "text_coverage": 1.0,
+    "min_page_coverage": 1.0,
+    "ocr_mean_confidence": null,
+    "fallback_pages": [],
+    "furniture_lines_removed": 0,
+    "block_count": 8,
+    "table_count": 1,
+    "section_count": 4
+  },
+  "warnings": [],
+  "pages": [
+    {
+      "number": 1,
+      "width": 595.28,
+      "height": 841.89,
+      "text_source": "text_layer",
+      "chars_available": 189,
+      "chars_emitted": 189,
+      "chars_sideways": 0,
+      "coverage": 1.0,
+      "ocr_confidence": null
+    },
+    {
+      "number": 2,
+      "width": 595.28,
+      "height": 841.89,
+      "text_source": "text_layer",
+      "chars_available": 91,
+      "chars_emitted": 91,
+      "chars_sideways": 0,
+      "coverage": 1.0,
+      "ocr_confidence": null
+    }
+  ],
+  "blocks": [
+    {
+      "id": "b00001",
+      "type": "heading",
+      "text": "EDITAL Nº 1/2026",
+      "section_id": "s0001",
+      "page_start": 1,
+      "page_end": 1,
+      "source": "text_layer",
+      "spans": [
+        {
+          "page": 1,
+          "bbox": [
+            72.0,
+            59.31,
+            204.99,
+            75.31
+          ],
+          "start": 0,
+          "end": 16
+        }
+      ],
+      "level": 1
+    },
+    {
+      "id": "b00002",
+      "type": "heading",
+      "text": "1. DAS DISPOSIÇÕES PRELIMINARES",
+      "section_id": "s0002",
+      "page_start": 1,
+      "page_end": 1,
+      "source": "text_layer",
+      "spans": [
+        {
+          "page": 1,
+          "bbox": [
+            72.0,
+            87.29,
+            308.94,
+            100.29
+          ],
+          "start": 0,
+          "end": 31
+        }
+      ],
+      "level": 2
+    },
+    {
+      "id": "b00003",
+      "type": "paragraph",
+      "text": "1.1 O concurso será regido por este edital e executado pela banca organizadora, com provas em todo o país.",
+      "section_id": "s0002",
+      "page_start": 1,
+      "page_end": 1,
+      "source": "text_layer",
+      "spans": [
+        {
+          "page": 1,
+          "bbox": [
+            72.0,
+            109.68,
+            339.81,
+            120.68
+          ],
+          "start": 0,
+          "end": 54
+        },
+        {
+          "page": 1,
+          "bbox": [
+            72.0,
+            123.68,
+            334.91,
+            134.68
+          ],
+          "start": 55,
+          "end": 106
+        }
+      ]
+    },
+    {
+      "id": "b00004",
+      "type": "heading",
+      "text": "2. DOS CARGOS",
+      "section_id": "s0003",
+      "page_start": 1,
+      "page_end": 1,
+      "source": "text_layer",
+      "spans": [
+        {
+          "page": 1,
+          "bbox": [
+            72.0,
+            146.09,
+            175.3,
+            159.09
+          ],
+          "start": 0,
+          "end": 13
+        }
+      ],
+      "level": 2
+    },
+    {
+      "id": "b00005",
+      "type": "table",
+      "text": "",
+      "section_id": "s0003",
+      "page_start": 1,
+      "page_end": 1,
+      "source": "text_layer",
+      "spans": [
+        {
+          "page": 1,
+          "bbox": [
+            72.0,
+            165.2,
+            523.28,
+            219.2
+          ]
+        }
+      ],
+      "table_id": "t0001"
+    },
+    {
+      "id": "b00006",
+      "type": "heading",
+      "text": "3. DAS INSCRIÇÕES",
+      "section_id": "s0004",
+      "page_start": 2,
+      "page_end": 2,
+      "source": "text_layer",
+      "spans": [
+        {
+          "page": 2,
+          "bbox": [
+            72.0,
+            61.69,
+            198.41,
+            74.69
+          ],
+          "start": 0,
+          "end": 17
+        }
+      ],
+      "level": 2
+    },
+    {
+      "id": "b00007",
+      "type": "paragraph",
+      "text": "3.1 As inscrições ficam abertas de 1º a 30 de novembro de 2026.",
+      "section_id": "s0004",
+      "page_start": 2,
+      "page_end": 2,
+      "source": "text_layer",
+      "spans": [
+        {
+          "page": 2,
+          "bbox": [
+            72.0,
+            84.08,
+            390.29,
+            95.08
+          ],
+          "start": 0,
+          "end": 63
+        }
+      ]
+    },
+    {
+      "id": "b00008",
+      "type": "paragraph",
+      "text": "3.1.1 A taxa de inscrição é de R$ 120,00.",
+      "section_id": "s0004",
+      "page_start": 2,
+      "page_end": 2,
+      "source": "text_layer",
+      "spans": [
+        {
+          "page": 2,
+          "bbox": [
+            72.0,
+            108.08,
+            273.78,
+            119.08
+          ],
+          "start": 0,
+          "end": 41
+        }
+      ]
+    }
+  ],
+  "tables": [
+    {
+      "id": "t0001",
+      "block_id": "b00005",
+      "section_id": "s0003",
+      "page_start": 1,
+      "page_end": 1,
+      "column_count": 3,
+      "row_count": 3,
+      "rows": [
+        {
+          "cells": [
+            "Cargo",
+            "Vagas",
+            "Remuneração"
+          ],
+          "page": 1,
+          "bbox": [
+            72.0,
+            165.2,
+            523.28,
+            183.2
+          ],
+          "cell_boxes": [
+            [
+              72.0,
+              165.2,
+              222.43,
+              183.2
+            ],
+            [
+              222.43,
+              165.2,
+              372.85,
+              183.2
+            ],
+            [
+              372.85,
+              165.2,
+              523.28,
+              183.2
+            ]
+          ]
+        },
+        {
+          "cells": [
+            "Analista",
+            "10",
+            "R$ 9.000,00"
+          ],
+          "page": 1,
+          "bbox": [
+            72.0,
+            183.2,
+            523.28,
+            201.2
+          ],
+          "cell_boxes": [
+            [
+              72.0,
+              183.2,
+              222.43,
+              201.2
+            ],
+            [
+              222.43,
+              183.2,
+              372.85,
+              201.2
+            ],
+            [
+              372.85,
+              183.2,
+              523.28,
+              201.2
+            ]
+          ]
+        },
+        {
+          "cells": [
+            "Técnico",
+            "20",
+            "R$ 5.000,00"
+          ],
+          "page": 1,
+          "bbox": [
+            72.0,
+            201.2,
+            523.28,
+            219.2
+          ],
+          "cell_boxes": [
+            [
+              72.0,
+              201.2,
+              222.43,
+              219.2
+            ],
+            [
+              222.43,
+              201.2,
+              372.85,
+              219.2
+            ],
+            [
+              372.85,
+              201.2,
+              523.28,
+              219.2
+            ]
+          ]
+        }
+      ]
+    }
+  ],
+  "sections": [
+    {
+      "id": "s0001",
+      "title": "EDITAL Nº 1/2026",
+      "numbering": null,
+      "level": 1,
+      "depth": 1,
+      "parent_id": null,
+      "heading_block_id": "b00001",
+      "first_block_id": "b00001",
+      "last_block_id": "b00008",
+      "page_start": 1,
+      "page_end": 2
+    },
+    {
+      "id": "s0002",
+      "title": "1. DAS DISPOSIÇÕES PRELIMINARES",
+      "numbering": "1",
+      "level": 2,
+      "depth": 2,
+      "parent_id": "s0001",
+      "heading_block_id": "b00002",
+      "first_block_id": "b00002",
+      "last_block_id": "b00003",
+      "page_start": 1,
+      "page_end": 1
+    },
+    {
+      "id": "s0003",
+      "title": "2. DOS CARGOS",
+      "numbering": "2",
+      "level": 2,
+      "depth": 2,
+      "parent_id": "s0001",
+      "heading_block_id": "b00004",
+      "first_block_id": "b00004",
+      "last_block_id": "b00005",
+      "page_start": 1,
+      "page_end": 1
+    },
+    {
+      "id": "s0004",
+      "title": "3. DAS INSCRIÇÕES",
+      "numbering": "3",
+      "level": 2,
+      "depth": 2,
+      "parent_id": "s0001",
+      "heading_block_id": "b00006",
+      "first_block_id": "b00006",
+      "last_block_id": "b00008",
+      "page_start": 2,
+      "page_end": 2
+    }
+  ]
+}
