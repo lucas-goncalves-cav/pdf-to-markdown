@@ -65,6 +65,9 @@ class Table:
     #: The box of each row in ``rows``, so a fact read from one row can point
     #: at that row on the page rather than at the whole table.
     row_boxes: list[tuple[float, float, float, float]] = field(default_factory=list)
+    #: The box of every cell. Only text inside a cell belongs to the table:
+    #: a table drawn past the page edge can enclose the page footer too.
+    cell_boxes: list[tuple[float, float, float, float]] = field(default_factory=list)
 
     @property
     def top(self) -> float:

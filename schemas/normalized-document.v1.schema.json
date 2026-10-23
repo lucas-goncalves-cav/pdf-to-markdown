@@ -31,7 +31,7 @@
     "document_id": {
       "type": "string",
       "pattern": "^nd_[0-9a-f]{32}$",
-      "description": "Derived from the source content hash, the converter version and the options. The same PDF converted the same way always gets the same id."
+      "description": "Derived from the source content hash, the converter version and the options that had an effect (a page limit not reached, or OCR on a document with no scanned page, does not count). The same PDF converted the same way always gets the same id."
     },
     "normalized_content_hash": {
       "$ref": "#/$defs/sha256",

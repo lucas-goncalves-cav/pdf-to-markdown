@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from app.converters import pipeline
-from app.converters.models import Block, BlockKind, TextLine
+from app.converters.models import Block, BlockKind, ExtractedDocument, TextLine
 from app.converters.ocr import OcrSettings
 from app.converters.ocr import unavailable_reason as ocr_unavailable_reason
 from app.converters.structure import join_wrapped
@@ -87,8 +87,7 @@ def normalize(
         "max_pages": max_pages,
         "ocr": {
             "requested": ocr is not None,
-            # Whether OCR could run changes what comes out of a scanned page,
-            # so it is part of the options that identify a conversion.
+            # Whether OCR could run changes what comes out of a scanned page.
             "available": ocr is not None and ocr_unavailable_reason(ocr) is None,
             "languages": ocr.languages if ocr is not None else None,
         },
@@ -118,8 +117,9 @@ def build(
     document = extraction.document
     source_hash = _sha256(data)
     converter = {"name": CONVERTER_NAME, "version": CONVERTER_VERSION, "options": options}
+    effective = _canonical(_effective_options(options, document))
     document_id = "nd_" + _sha256(
-        f"{source_hash}|{CONVERTER_NAME}/{CONVERTER_VERSION}|{_canonical(options)}".encode()
+        f"{source_hash}|{CONVERTER_NAME}/{CONVERTER_VERSION}|{effective}".encode()
     )[:32]
 
     structure = _Structure.of(extraction.blocks)
@@ -157,6 +157,26 @@ def build(
         ],
         **content,
     }
+
+
+def _effective_options(options: dict, document: ExtractedDocument) -> dict:
+    """The options that changed what came out, which are the ones that identify it.
+
+    A page limit the document did not reach, or OCR on a document with no
+    scanned page, changed nothing. Leaving them in would give one conversion
+    a different id behind the API, with its default limit and OCR on, than
+    from the command line.
+    """
+
+    effective = dict(options)
+
+    if len(document.page_heights) == document.page_count:
+        effective["max_pages"] = None
+
+    if not document.scanned_pages:
+        effective["ocr"] = None
+
+    return effective
 
 
 @dataclass

@@ -96,9 +96,8 @@ def extract_document(
                         continue
 
                 page_tables = _tables_for_page(page, page_number) if include_tables else []
-                regions = [table.bbox for table in page_tables]
 
-                page_lines, sideways = _lines_for_page(page, page_number, exclude=regions)
+                page_lines, sideways = _lines_for_page(page, page_number, exclude=page_tables)
 
                 tables.extend(page_tables)
                 lines.extend(page_lines)
@@ -221,19 +220,25 @@ def _tables_for_page(page, page_number: int) -> list[Table]:
         row_boxes = [boxes[index] for index in kept] if len(boxes) == len(extracted) else []
 
         tables.append(
-            Table(rows=rows, page=page_number, bbox=tuple(table.bbox), row_boxes=row_boxes)
+            Table(
+                rows=rows,
+                page=page_number,
+                bbox=tuple(table.bbox),
+                row_boxes=row_boxes,
+                cell_boxes=[tuple(cell) for cell in table.cells],
+            )
         )
 
     return tables
 
 
 def _lines_for_page(
-    page, page_number: int, exclude: list[tuple] | None = None
+    page, page_number: int, exclude: list[Table] | None = None
 ) -> tuple[list[TextLine], int]:
     """Group a page's characters into lines, carrying font metadata along.
 
-    Characters inside an ``exclude`` box belong to a table that is rendered
-    separately, so they are left out here.
+    Characters inside a cell of an ``exclude`` table belong to the table,
+    which is rendered separately, so they are left out here.
 
     Returns the lines and how many letters and digits were left out because
     they were set sideways, or a negative count of sideways characters that
@@ -243,7 +248,7 @@ def _lines_for_page(
     characters = page.chars
 
     if exclude:
-        characters = [char for char in characters if not _inside_any(char, exclude)]
+        characters = [char for char in characters if not _in_a_table(char, exclude)]
 
     # Text set on its side is usually a stamp in the margin, the digital
     # signature notice a signing tool adds to every page. Grouped by height
@@ -310,6 +315,21 @@ def _lines_for_page(
         )
 
     return lines, sideways
+
+
+def _in_a_table(char: dict, tables: list[Table]) -> bool:
+    """Whether a character sits in a cell of one of the tables.
+
+    The table's box is checked first, which settles most characters cheaply.
+    Inside it, only a cell counts: a table drawn past the page edge encloses
+    the page footer, which is not in any cell and would otherwise be lost.
+    """
+
+    return any(
+        _inside_any(char, [table.bbox])
+        and (not table.cell_boxes or _inside_any(char, table.cell_boxes))
+        for table in tables
+    )
 
 
 def _inside_any(char: dict, boxes: list[tuple]) -> bool:
