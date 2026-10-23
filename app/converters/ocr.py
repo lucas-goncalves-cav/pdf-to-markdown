@@ -134,7 +134,9 @@ def _line_from_element(element, *, page_number: int, scale: float) -> TextLine |
     if not any(character.isalnum() for character in text):
         return None
 
-    if sum(confidences) / len(confidences) < MIN_LINE_CONFIDENCE:
+    confidence = sum(confidences) / len(confidences)
+
+    if confidence < MIN_LINE_CONFIDENCE:
         return None
 
     title = element.get("title", "")
@@ -143,7 +145,7 @@ def _line_from_element(element, *, page_number: int, scale: float) -> TextLine |
     if box is None:
         return None
 
-    x0, y0, _x1, y1 = (float(value) for value in box.groups())
+    x0, y0, x1, y1 = (float(value) for value in box.groups())
     height = y1 - y0
 
     size = _number(title, "x_size", default=height)
@@ -172,6 +174,10 @@ def _line_from_element(element, *, page_number: int, scale: float) -> TextLine |
         x0=x0 * scale,
         top=max(top, 0.0) * scale,
         page=page_number,
+        x1=x1 * scale,
+        bottom=y1 * scale,
+        source="ocr",
+        confidence=round(confidence, 1),
     )
 
 

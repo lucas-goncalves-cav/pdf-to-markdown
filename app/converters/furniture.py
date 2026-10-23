@@ -37,6 +37,7 @@ MIN_REPEATS = 3
 
 _DIGITS = re.compile(r"\d+")
 _SPACE = re.compile(r"\s+")
+_TRAILING_NUMBER = re.compile(r"(\d{1,4})\W*$")
 
 #: What a page number looks like: "Página 2", "pág. 2", "fls. 2", "2 de 68",
 #: "2/68", "Page 2 of 4", or a number on its own, "2" or "- 2 -".
@@ -77,9 +78,55 @@ def strip_running_text(
             if len({lines[index].page for index in cluster}) >= needed:
                 running.update(index for index in cluster if lines[index].page != first_page)
 
+    running.update(
+        index
+        for index in _numbered_footers(lines, page_heights, needed, exclude=running)
+        if lines[index].page != first_page
+    )
+
     kept = [line for index, line in enumerate(lines) if index not in running]
 
     return kept, len(running)
+
+
+def _numbered_footers(
+    lines: list[TextLine], page_heights: dict[int, float], needed: int, *, exclude: set[int]
+) -> set[int]:
+    """Footers that end in a bare page number: "MINISTÉRIO PÚBLICO | CONCURSO PÚBLICO 37".
+
+    Nothing marks the number as a page number, so the signature keeps it and
+    the footer differs on every page. It is one when the number moves in step
+    with the page, the same offset on every page. Only footers qualify: a
+    "Chapter 2" heading opening page 2 sits at the top, and that is the case
+    where digits have to count.
+    """
+
+    groups: dict[str, list[int]] = defaultdict(list)
+
+    for index, line in enumerate(lines):
+        height = page_heights.get(line.page)
+
+        if index in exclude or not height or line.top < height * (1 - FOOTER_ZONE):
+            continue
+
+        match = _TRAILING_NUMBER.search(line.text)
+
+        if match and _SPACE.sub(" ", line.text[: match.start()]).strip():
+            groups[signature(line.text[: match.start()])].append(index)
+
+    found: set[int] = set()
+
+    for indexes in groups.values():
+        for cluster in _clusters_by_height(indexes, lines):
+            offsets = {
+                int(_TRAILING_NUMBER.search(lines[index].text).group(1)) - lines[index].page
+                for index in cluster
+            }
+
+            if len(offsets) == 1 and len({lines[index].page for index in cluster}) >= needed:
+                found.update(cluster)
+
+    return found
 
 
 def signature(text: str) -> str:

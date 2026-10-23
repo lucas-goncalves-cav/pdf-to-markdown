@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, field
 
 from app.converters import extractor, furniture, renderer, structure
-from app.converters.models import Block, ConversionResult, ExtractedDocument
+from app.converters.models import Block, ConversionResult, ExtractedDocument, TextLine
 from app.converters.ocr import OcrSettings
 
 logger = logging.getLogger(__name__)
@@ -142,14 +143,33 @@ def scan_warnings(document: ExtractedDocument, *, ocr_requested: bool) -> list[s
     is otherwise text.
     """
 
+    return [finding.message for finding in scan_findings(document, ocr_requested=ocr_requested)]
+
+
+@dataclass(frozen=True)
+class Finding:
+    """A warning with a stable code and the pages it is about, for machine callers."""
+
+    code: str
+    message: str
+    pages: tuple[int, ...] = ()
+
+
+def scan_findings(document: ExtractedDocument, *, ocr_requested: bool) -> list[Finding]:
+    """:func:`scan_warnings`, with a code a caller can match on instead of the text."""
+
     if not (document.lines or document.tables):
         if document.ocr_pages:
             return [
-                "No text was found, even with OCR. This PDF is most likely a scan "
-                "of blank or unreadable pages."
+                Finding(
+                    "NO_TEXT_AFTER_OCR",
+                    "No text was found, even with OCR. This PDF is most likely a scan "
+                    "of blank or unreadable pages.",
+                    tuple(document.ocr_pages),
+                )
             ]
 
-        return [NO_TEXT_WARNING]
+        return [Finding("NO_TEXT", NO_TEXT_WARNING, tuple(document.scanned_pages))]
 
     # A scanned page can still carry a line or two of real text, such as a
     # signature stamp, so having lines does not mean the page was read.
@@ -157,12 +177,16 @@ def scan_warnings(document: ExtractedDocument, *, ocr_requested: bool) -> list[s
     unread = [page for page in document.scanned_pages if page not in recovered]
     skipped = [page for page in unread if page not in document.ocr_pages]
 
-    warnings: list[str] = []
+    findings: list[Finding] = []
 
     if recovered:
-        warnings.append(
-            f"Read {_pages(recovered)} with OCR because there was no text layer. "
-            "OCR text can contain recognition errors, and its headings are approximate."
+        findings.append(
+            Finding(
+                "OCR_USED",
+                f"Read {_pages(recovered)} with OCR because there was no text layer. "
+                "OCR text can contain recognition errors, and its headings are approximate.",
+                tuple(recovered),
+            )
         )
 
     if unread:
@@ -175,9 +199,60 @@ def scan_warnings(document: ExtractedDocument, *, ocr_requested: bool) -> list[s
         else:
             reason = "they need OCR, which was not used"
 
-        warnings.append(f"Skipped scanned {_pages(unread)}: {reason}.")
+        findings.append(
+            Finding(
+                "SCANNED_PAGES_SKIPPED",
+                f"Skipped scanned {_pages(unread)}: {reason}.",
+                tuple(unread),
+            )
+        )
 
-    return warnings
+    return findings
+
+
+@dataclass
+class Extraction:
+    """Everything the pipeline learned about a document before rendering it."""
+
+    document: ExtractedDocument
+    blocks: list[Block]
+    #: Lines dropped as running headers and footers.
+    furniture: list[TextLine] = field(default_factory=list)
+
+
+def extract(
+    data: bytes,
+    *,
+    include_tables: bool = True,
+    max_pages: int | None = None,
+    strip_headers: bool = True,
+    ocr: OcrSettings | None = None,
+) -> Extraction:
+    """Read and classify a PDF, stopping short of Markdown.
+
+    Raises:
+        extractor.PdfExtractionError: the file could not be read as a PDF.
+    """
+
+    document = extractor.extract_document(
+        data,
+        max_pages=max_pages,
+        include_tables=include_tables,
+        ocr=ocr,
+    )
+
+    lines = document.lines
+    removed: list[TextLine] = []
+
+    if strip_headers:
+        lines, count = furniture.strip_running_text(lines, document.page_heights)
+
+        if count:
+            kept = {id(line) for line in lines}
+            removed = [line for line in document.lines if id(line) not in kept]
+            logger.info("Removed %d lines of running headers and footers.", count)
+
+    return Extraction(document, structure.to_blocks(lines, document.tables), removed)
 
 
 def _extract_blocks(
@@ -188,22 +263,15 @@ def _extract_blocks(
     strip_headers: bool,
     ocr: OcrSettings | None,
 ) -> tuple[ExtractedDocument, list[Block]]:
-    document = extractor.extract_document(
+    extraction = extract(
         data,
-        max_pages=max_pages,
         include_tables=include_tables,
+        max_pages=max_pages,
+        strip_headers=strip_headers,
         ocr=ocr,
     )
 
-    lines = document.lines
-
-    if strip_headers:
-        lines, removed = furniture.strip_running_text(lines, document.page_heights)
-
-        if removed:
-            logger.info("Removed %d lines of running headers and footers.", removed)
-
-    return document, structure.to_blocks(lines, document.tables)
+    return extraction.document, extraction.blocks
 
 
 def _pages(numbers: list[int]) -> str:

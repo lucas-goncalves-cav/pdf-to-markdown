@@ -1,0 +1,362 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/lucas-goncalves-cav/pdf-to-markdown/schemas/normalized-document.v1.schema.json",
+  "title": "NormalizedDocument v1",
+  "description": "A PDF converted into ordered blocks, tables and sections, each traceable to a page and a box on it. The machine contract between pdf-to-markdown and its callers; Markdown stays a human output. Coordinates are PDF points with the origin at the top left of the page, boxes are [x0, top, x1, bottom].",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "schema_version",
+    "document_id",
+    "normalized_content_hash",
+    "generated_at",
+    "coordinates",
+    "source",
+    "converter",
+    "quality",
+    "warnings",
+    "pages",
+    "blocks",
+    "tables",
+    "sections"
+  ],
+  "properties": {
+    "schema": { "const": "normalized-document" },
+    "schema_version": {
+      "type": "string",
+      "pattern": "^1\\.\\d+\\.\\d+$",
+      "description": "1.x.y: minor versions only add optional fields."
+    },
+    "document_id": {
+      "type": "string",
+      "pattern": "^nd_[0-9a-f]{32}$",
+      "description": "Derived from the source content hash, the converter version and the options. The same PDF converted the same way always gets the same id."
+    },
+    "normalized_content_hash": {
+      "$ref": "#/$defs/sha256",
+      "description": "Hash of pages, blocks, tables and sections in canonical JSON. Unchanged content, unchanged hash."
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When this conversion ran. Not part of either hash."
+    },
+    "coordinates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["unit", "origin", "bbox"],
+      "properties": {
+        "unit": { "const": "pt" },
+        "origin": { "const": "top-left" },
+        "bbox": { "const": "x0,top,x1,bottom" }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["content_hash", "size_bytes", "media_type", "filename", "uri", "page_count", "metadata"],
+      "properties": {
+        "content_hash": { "$ref": "#/$defs/sha256", "description": "SHA-256 of the PDF bytes." },
+        "size_bytes": { "type": "integer", "minimum": 1 },
+        "media_type": { "const": "application/pdf" },
+        "filename": { "type": ["string", "null"] },
+        "uri": {
+          "type": ["string", "null"],
+          "description": "Where the caller got the PDF, as the caller stated it. Not fetched or checked by the converter."
+        },
+        "page_count": { "type": "integer", "minimum": 0 },
+        "metadata": {
+          "type": "object",
+          "description": "Text entries of the PDF information dictionary (Title, Producer, CreationDate...).",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    },
+    "converter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "options"],
+      "properties": {
+        "name": { "const": "pdf-to-markdown" },
+        "version": { "type": "string" },
+        "options": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["include_tables", "strip_headers", "max_pages", "ocr"],
+          "properties": {
+            "include_tables": { "type": "boolean" },
+            "strip_headers": { "type": "boolean" },
+            "max_pages": { "type": ["integer", "null"] },
+            "ocr": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["requested", "available", "languages"],
+              "properties": {
+                "requested": { "type": "boolean" },
+                "available": { "type": "boolean" },
+                "languages": { "type": ["string", "null"] }
+              }
+            }
+          }
+        }
+      }
+    },
+    "quality": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The documental quality gate. A consumer decides from status and fallback_pages whether the text can be trusted or a page has to be read from the PDF.",
+      "required": [
+        "status",
+        "pages_total",
+        "pages_converted",
+        "pages_text_layer",
+        "pages_ocr",
+        "pages_unread",
+        "text_coverage",
+        "min_page_coverage",
+        "ocr_mean_confidence",
+        "fallback_pages",
+        "furniture_lines_removed",
+        "block_count",
+        "table_count",
+        "section_count"
+      ],
+      "properties": {
+        "status": {
+          "enum": ["ok", "degraded", "unreadable"],
+          "description": "ok: every page read from its text layer with full coverage. degraded: OCR, truncation, unread or low coverage pages; see warnings. unreadable: nothing came out."
+        },
+        "pages_total": { "type": "integer", "minimum": 0 },
+        "pages_converted": { "type": "integer", "minimum": 0 },
+        "pages_text_layer": { "type": "integer", "minimum": 0 },
+        "pages_ocr": { "type": "integer", "minimum": 0 },
+        "pages_unread": { "type": "integer", "minimum": 0 },
+        "text_coverage": {
+          "type": ["number", "null"],
+          "description": "Letters and digits emitted over letters and digits in the text layer, on text layer pages. Close to 1 is good; below means text lost, above means text duplicated."
+        },
+        "min_page_coverage": { "type": ["number", "null"] },
+        "ocr_mean_confidence": { "type": ["number", "null"], "minimum": 0, "maximum": 100 },
+        "fallback_pages": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 1 },
+          "description": "Pages whose extracted text should not be relied on; read them from the PDF if they matter."
+        },
+        "furniture_lines_removed": { "type": "integer", "minimum": 0 },
+        "block_count": { "type": "integer", "minimum": 0 },
+        "table_count": { "type": "integer", "minimum": 0 },
+        "section_count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "message", "pages"],
+        "properties": {
+          "code": {
+            "enum": [
+              "NO_TEXT",
+              "NO_TEXT_AFTER_OCR",
+              "OCR_USED",
+              "SCANNED_PAGES_SKIPPED",
+              "TRUNCATED",
+              "LOW_TEXT_COVERAGE",
+              "TEXT_DUPLICATED",
+              "SIDEWAYS_TEXT_SKIPPED",
+              "SIDEWAYS_CONTENT"
+            ]
+          },
+          "message": { "type": "string" },
+          "pages": { "type": "array", "items": { "type": "integer", "minimum": 1 } }
+        }
+      }
+    },
+    "pages": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "number",
+          "width",
+          "height",
+          "text_source",
+          "chars_available",
+          "chars_emitted",
+          "chars_sideways",
+          "coverage",
+          "ocr_confidence"
+        ],
+        "properties": {
+          "number": { "type": "integer", "minimum": 1 },
+          "width": { "type": "number", "minimum": 0 },
+          "height": { "type": "number", "minimum": 0 },
+          "text_source": {
+            "enum": ["text_layer", "ocr", "none"],
+            "description": "none: a picture of text that was not read."
+          },
+          "chars_available": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Letters and digits in the page's text layer."
+          },
+          "chars_emitted": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Letters and digits read into lines and tables, running headers and footers included."
+          },
+          "chars_sideways": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Letters and digits set sideways outside tables, left out on purpose (signature stamps)."
+          },
+          "coverage": {
+            "type": ["number", "null"],
+            "description": "(chars_emitted + chars_sideways) / chars_available, on text layer pages."
+          },
+          "ocr_confidence": { "type": ["number", "null"], "minimum": 0, "maximum": 100 }
+        }
+      }
+    },
+    "blocks": {
+      "type": "array",
+      "description": "Everything on the converted pages, in reading order, with running headers and footers removed.",
+      "items": { "$ref": "#/$defs/block" }
+    },
+    "tables": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/table" }
+    },
+    "sections": {
+      "type": "array",
+      "description": "One per heading, nested by heading level. A section runs from its heading to last_block_id, subsections included.",
+      "items": { "$ref": "#/$defs/section" }
+    }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "bbox": {
+      "type": "array",
+      "items": { "type": "number" },
+      "minItems": 4,
+      "maxItems": 4,
+      "description": "[x0, top, x1, bottom] in points from the top left of the page."
+    },
+    "block_id": { "type": "string", "pattern": "^b\\d{5,}$" },
+    "section_id": { "type": "string", "pattern": "^s\\d{4,}$" },
+    "table_id": { "type": "string", "pattern": "^t\\d{4,}$" },
+    "span": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["page", "bbox"],
+      "properties": {
+        "page": { "type": "integer", "minimum": 1 },
+        "bbox": { "oneOf": [{ "$ref": "#/$defs/bbox" }, { "type": "null" }] },
+        "start": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "First character of the block text that came from this box."
+        },
+        "end": { "type": "integer", "minimum": 0, "description": "One past the last character." }
+      }
+    },
+    "block": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type", "text", "section_id", "page_start", "page_end", "source", "spans"],
+      "properties": {
+        "id": { "$ref": "#/$defs/block_id" },
+        "type": { "enum": ["heading", "paragraph", "list_item", "table"] },
+        "text": {
+          "type": "string",
+          "description": "Lines rejoined and dehyphenated. Empty for a table, whose content is in tables[]."
+        },
+        "section_id": { "oneOf": [{ "$ref": "#/$defs/section_id" }, { "type": "null" }] },
+        "page_start": { "type": "integer", "minimum": 1 },
+        "page_end": { "type": "integer", "minimum": 1 },
+        "source": { "enum": ["text_layer", "ocr"] },
+        "spans": {
+          "type": "array",
+          "description": "Where the block sits: one span per line of text, or per page of a table. start and end map a range of text to its line.",
+          "items": { "$ref": "#/$defs/span" }
+        },
+        "level": { "type": "integer", "minimum": 1, "maximum": 6, "description": "Headings only." },
+        "indent": { "type": "integer", "minimum": 0, "description": "List items only." },
+        "table_id": { "$ref": "#/$defs/table_id", "description": "Tables only." }
+      }
+    },
+    "table": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "block_id",
+        "section_id",
+        "page_start",
+        "page_end",
+        "column_count",
+        "row_count",
+        "rows"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/table_id" },
+        "block_id": { "$ref": "#/$defs/block_id" },
+        "section_id": { "oneOf": [{ "$ref": "#/$defs/section_id" }, { "type": "null" }] },
+        "page_start": { "type": "integer", "minimum": 1 },
+        "page_end": { "type": "integer", "minimum": 1 },
+        "column_count": { "type": "integer", "minimum": 2 },
+        "row_count": { "type": "integer", "minimum": 1 },
+        "rows": {
+          "type": "array",
+          "description": "Rows in order, the first usually the header. A table split by page breaks is joined, its repeated header dropped.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["cells", "page", "bbox"],
+            "properties": {
+              "cells": { "type": "array", "items": { "type": "string" } },
+              "page": { "type": "integer", "minimum": 1 },
+              "bbox": { "oneOf": [{ "$ref": "#/$defs/bbox" }, { "type": "null" }] }
+            }
+          }
+        }
+      }
+    },
+    "section": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "title",
+        "numbering",
+        "level",
+        "depth",
+        "parent_id",
+        "heading_block_id",
+        "first_block_id",
+        "last_block_id",
+        "page_start",
+        "page_end"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/section_id" },
+        "title": { "type": "string" },
+        "numbering": {
+          "type": ["string", "null"],
+          "description": "Leading number or annex label of the title: \"3.2\", \"ANEXO II\"."
+        },
+        "level": { "type": "integer", "minimum": 1, "maximum": 6, "description": "Heading level as detected." },
+        "depth": { "type": "integer", "minimum": 1, "description": "Nesting depth in the section tree." },
+        "parent_id": { "oneOf": [{ "$ref": "#/$defs/section_id" }, { "type": "null" }] },
+        "heading_block_id": { "$ref": "#/$defs/block_id" },
+        "first_block_id": { "$ref": "#/$defs/block_id" },
+        "last_block_id": { "$ref": "#/$defs/block_id" },
+        "page_start": { "type": "integer", "minimum": 1 },
+        "page_end": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}
