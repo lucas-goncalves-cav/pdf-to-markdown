@@ -4,7 +4,7 @@ Converts a PDF into Markdown by inferring structure from typography, because a P
 
 ![Python](https://img.shields.io/badge/Python-3.13-3776AB)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.141-009688)
-![Tests](https://img.shields.io/badge/tests-129%20passing-success)
+![Tests](https://img.shields.io/badge/tests-171%20passing-success)
 ![Docker](https://img.shields.io/badge/Docker-Enabled-2496ED)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
@@ -256,6 +256,46 @@ which quietly mangled a legitimate `report..final.pdf` into `report.md`.
 A 422 is the honest answer for a file that passed validation but could not be read: the request was well formed, the
 content was not processable.
 
+## NormalizedDocument: the contract for other systems
+
+Markdown is for people. A system that takes facts out of a document needs to point each one back to the
+page and the spot it came from, and Markdown throws exactly that away. `POST /api/normalized-document`, and
+`python -m app.normalized` for batch jobs, return a **NormalizedDocument v1**: JSON with a canonical schema in
+[`schemas/normalized-document.v1.schema.json`](schemas/normalized-document.v1.schema.json) and an example in
+[`schemas/examples`](schemas/examples).
+
+| Part | What it carries |
+| --- | --- |
+| `blocks` | Every heading, paragraph, list item and table in reading order, each with `spans`: one per line of text, with the page, the box `[x0, top, x1, bottom]` in points and the range of the block's text that came from it |
+| `tables` | Rows of cells, each row with its page, its box and the box of every cell |
+| `sections` | One per heading, nested, with the range of blocks it covers |
+| `pages` | Size, where the text came from (`text_layer`, `ocr` or `none`) and the share of letters and digits that reached the output |
+| `quality` | `ok`, `degraded` or `unreadable`, and the pages a caller should read from the PDF instead (`fallback_pages`) |
+| `warnings` | Coded: `OCR_USED`, `SCANNED_PAGES_SKIPPED`, `TRUNCATED`, `LOW_TEXT_COVERAGE`, `SIDEWAYS_TEXT_SKIPPED`... |
+
+Three properties are the point of it:
+
+- **Provenance.** A quote taken from a block, as a character range, resolves to the exact line and box on
+  the page, even when the paragraph runs over a page break.
+- **Identity.** `document_id` comes from the PDF's hash, the converter version and the options that had an
+  effect, and `normalized_content_hash` from the content. The same PDF converted the same way always gives
+  the same id, so a caller can convert once and reuse the result.
+- **Honesty about what was not read.** Coverage is measured per page against the text layer, scanned pages
+  say whether OCR read them, and a stamp set sideways in the margin is reported rather than scattered through
+  the text.
+
+The route validates the upload like every other one and takes two more form fields: `sourceUri`, where the PDF
+came from, kept as provenance and never fetched, and the usual `includeTables` and `stripHeaders`. A caller's
+`X-Correlation-Id` header is logged and echoed back, so one conversion can be found in both systems' logs.
+
+```bash
+curl -X POST http://localhost:8000/api/normalized-document   -H "X-Correlation-Id: corr-123"   -F "file=@edital.pdf;type=application/pdf"   -F "sourceUri=https://example.gov.br/edital.pdf"
+```
+
+It describes structure only. Nothing here knows what a vacancy or a syllabus is: that is the consumer's job.
+The benchmark that shaped it, five real public notices measured before and after, is in
+[`docs/benchmark-editais.md`](docs/benchmark-editais.md), and the decisions in [`docs/decisoes.md`](docs/decisoes.md).
+
 ## Technologies
 
 | Area | Stack |
@@ -279,6 +319,9 @@ app/
     structure.py   lines and tables -> classified blocks, where the heuristics live
     renderer.py    blocks -> Markdown, with escaping
     pipeline.py    the stages wired together, and the warnings about scanned pages
+  normalized/
+    builder.py     extraction -> NormalizedDocument v1, with spans, sections and the quality gate
+    __main__.py    python -m app.normalized, for batch jobs
   api/
     validation.py  upload checks and filename sanitisation
   main.py          FastAPI routes
@@ -288,6 +331,10 @@ tests/
   test_conversion.py  extraction, heuristics and rendering
   test_ocr.py         hOCR parsing, and OCR end to end when tesseract is installed
   test_api.py         HTTP behaviour, with upload validation covered hardest
+  test_normalized.py  the contract: schema, identity, provenance, sections, quality gate
+schemas/              NormalizedDocument v1 schema and examples
+scripts/              benchmark against real notices
+docs/                 benchmark report and decisions, in Portuguese
 ```
 
 ## How to run
@@ -329,7 +376,7 @@ pytest
 pytest --cov=app --cov-report=term-missing
 ```
 
-129 tests. The PDFs they run against are built during the test rather than committed, so a test can state exactly
+171 tests. The PDFs they run against are built during the test rather than committed, so a test can state exactly
 what went into the document and a failure names the heuristic that broke. Scanned PDFs are built the same way, by
 rendering a generated PDF to images, and the OCR tests skip themselves when tesseract is not installed.
 
@@ -358,6 +405,7 @@ curl -X POST http://localhost:8000/api/convert \
 | `POST` | `/api/convert/download` | The `.md` as a file attachment |
 | `POST` | `/api/convert/txt` | Plain text, structure applied but no syntax |
 | `POST` | `/api/convert/json` | The block structure, for callers doing their own layout |
+| `POST` | `/api/normalized-document` | The NormalizedDocument v1, the contract for other systems |
 | `GET` | `/api/limits` | The limits this instance enforces |
 | `GET` | `/health` | Liveness |
 
@@ -423,6 +471,8 @@ Being explicit, because a converter that claims to handle everything is lying:
 - **Running text that changes.** A header that differs by more than a page number, such as the current chapter's
   title, is matched text by text, so each version is only removed if it repeats on at least three pages.
 - **Images.** Dropped entirely. There is nowhere sensible for them to go in a Markdown string.
+- **Content drawn sideways.** A landscape annex drawn turned on a portrait page is kept, but read a letter at a
+  time; the page is flagged with `SIDEWAYS_CONTENT` and listed in `fallback_pages`.
 
 ## Roadmap
 

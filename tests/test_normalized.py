@@ -85,6 +85,12 @@ class TestContract:
         assert document["source"]["page_count"] == 2
         assert document["source"]["content_hash"].startswith("sha256:")
 
+    @pytest.mark.parametrize(
+        "example", sorted((Path(__file__).parent.parent / "schemas" / "examples").glob("*.json"))
+    )
+    def test_published_examples_validate(self, example: Path) -> None:
+        _validate(json.loads(example.read_text(encoding="utf-8")))
+
     def test_an_empty_scan_still_validates(self, edital_pdf: bytes) -> None:
         scan = normalize(rasterise(edital_pdf), generated_at=FIXED_TIME)
 
