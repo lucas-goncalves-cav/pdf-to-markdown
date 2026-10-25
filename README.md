@@ -4,7 +4,7 @@ Converts a PDF into Markdown by inferring structure from typography, because a P
 
 ![Python](https://img.shields.io/badge/Python-3.13-3776AB)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.141-009688)
-![Tests](https://img.shields.io/badge/tests-171%20passing-success)
+![Tests](https://img.shields.io/badge/tests-199%20passing-success)
 ![Docker](https://img.shields.io/badge/Docker-Enabled-2496ED)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
@@ -204,6 +204,56 @@ Two OCR details come from looking at real output:
 OCR takes a second or more per page, so pages past `OCR_MAX_PAGES` are skipped, and conversion runs off the event loop
 so a long job does not stop `/health` from answering.
 
+### A conversion has a time limit, and is stopped when it reaches it
+
+A long notice full of tables, or a scan read with OCR, can take minutes. A conversion used to run in a thread, and
+Python cannot stop a thread, so when a caller gave up the conversion carried on, holding CPU and memory, until it
+finished on its own. Each conversion now runs in a child process of its own, started in a new session, which makes
+the child and every `tesseract` it starts one process group. When `CONVERSION_TIMEOUT_SECONDS` passes:
+
+| What happens | How |
+| --- | --- |
+| The work stops | The whole group gets `SIGKILL`: the child and its `tesseract` processes together |
+| Nothing is left in the process table | Every process of the group is reaped. A killed `tesseract` is handed to the server, which is PID 1 in the container and registers as a child subreaper anywhere else, and reaps it rather than leave a zombie holding one of the container's pids |
+| Temporary files go | The child's `TMPDIR` is a directory of its own under `/tmp`, removed after every conversion however it ended, so a killed pytesseract cannot leave page images on a 512 MB tmpfs |
+| The caller is told | `504`, with the code `conversion_timeout`, the limit, and the caller's `X-Correlation-Id` |
+
+```json
+{
+  "detail": {
+    "code": "conversion_timeout",
+    "message": "The conversion took longer than the 240 second limit and was stopped.",
+    "timeoutSeconds": 240
+  }
+}
+```
+
+**Why 240 seconds.** The Automation Core waits 300 seconds for the whole exchange (`Normalizador__TimeoutSeconds`).
+The limit has to be shorter, or the caller gives up first and the conversion runs on with nobody waiting for it. The
+60 seconds between them cover what is not conversion: receiving an upload of up to 30 MB, starting the child,
+serialising a NormalizedDocument that for a 300 page notice runs to several megabytes, and sending it back. And 240
+seconds is far above legitimate work: the slowest of five real notices took 35 seconds without OCR on a loaded
+machine, 14 seconds on its own, and OCR stops after 30 pages of a few seconds each. A caller with a shorter timeout
+should lower the limit with it, keeping it a minute under.
+
+**Why 504.** A conversion that did not finish is not a verdict on the file, unlike the 422 for a PDF that cannot be
+read: on a less loaded server the same file may finish, so the caller should try it again later. The Core treats any
+5xx as a transient failure, retried with backoff until its maximum number of attempts.
+
+Three more details:
+
+- A child that dies without answering, killed by the kernel for memory or by a bug, is a `500` with the code
+  `conversion_failed`. The kernel kills the process holding the document, which is now the child, so the server
+  survives it.
+- The child watches the server. If the server is gone, killed or restarted mid-conversion, or the limit has passed by
+  five seconds with nobody stopping it, the child kills its own group.
+- Starting a child costs half a second to a second, Python and pdfplumber imported afresh, which is small beside a
+  real notice. Nothing queues conversions: each request gets its own child, bounded by the container's CPU, memory
+  and pid limits.
+
+`python -m app.normalized` still converts in the process that runs it, without a limit, which is what a batch job
+wants.
+
 ### A scan is reported, not returned empty
 
 Without OCR, a scanned page yields nothing. Returning an empty file with no explanation is the least helpful possible
@@ -252,6 +302,8 @@ which quietly mangled a legitimate `report..final.pdf` into `report.md`.
 | Wrong extension, wrong type, too large, not a PDF | 400 |
 | Valid PDF header, corrupt contents | 422 |
 | A scan with no text | 200 with a warning |
+| The conversion ran past `CONVERSION_TIMEOUT_SECONDS` and was stopped | 504 |
+| The conversion process died without answering | 500 |
 
 A 422 is the honest answer for a file that passed validation but could not be read: the request was well formed, the
 content was not processable.
@@ -324,6 +376,7 @@ app/
     __main__.py    python -m app.normalized, for batch jobs
   api/
     validation.py  upload checks and filename sanitisation
+  isolation.py     each conversion in a child process of its own, killed with its group at the time limit
   main.py          FastAPI routes
   web.py           the browser UI, one self contained HTML page
 tests/
@@ -332,8 +385,10 @@ tests/
   test_ocr.py         hOCR parsing, and OCR end to end when tesseract is installed
   test_api.py         HTTP behaviour, with upload validation covered hardest
   test_normalized.py  the contract: schema, identity, provenance, sections, quality gate
+  test_isolation.py   the time limit: what is killed, reaped and removed, read from /proc
+  workloads.py        conversions that hang, crash or misbehave, run by the isolation tests
 schemas/              NormalizedDocument v1 schema and examples
-scripts/              benchmark against real notices
+scripts/              benchmark against real notices, and the time limit smoke for the image
 docs/                 benchmark report and decisions, in Portuguese
 ```
 
@@ -376,9 +431,18 @@ pytest
 pytest --cov=app --cov-report=term-missing
 ```
 
-171 tests. The PDFs they run against are built during the test rather than committed, so a test can state exactly
+199 tests. The PDFs they run against are built during the test rather than committed, so a test can state exactly
 what went into the document and a failure names the heuristic that broke. Scanned PDFs are built the same way, by
-rendering a generated PDF to images, and the OCR tests skip themselves when tesseract is not installed.
+rendering a generated PDF to images, and the OCR tests skip themselves when tesseract is not installed. The time
+limit tests check what is left in the process table, read from `/proc`, so they run on Linux only.
+
+The time limit is also checked in the built image, under the restrictions the Automation Core runs it with, by
+stopping a real OCR conversion mid-page:
+
+```bash
+docker build -t pdf-to-markdown:local .
+bash scripts/smoke_timeout.sh pdf-to-markdown:local
+```
 
 ## API
 
@@ -417,7 +481,7 @@ curl -X POST http://localhost:8000/api/convert \
 | `stripHeaders` | `true` | `false` keeps running headers and footers on every page |
 
 `/api/limits` also reports `ocrEnabled` and `ocrMaxPages`, so a caller can tell whether a scan will be read before
-sending one. `/api/convert/json` includes the same `warnings` as `/api/convert`.
+sending one, and `conversionTimeoutSeconds`, the time limit. `/api/convert/json` includes the same `warnings` as `/api/convert`.
 
 ### Error shape
 
@@ -438,6 +502,8 @@ sending one. `/api/convert/json` includes the same `warnings` as `/api/convert`.
 | `empty_file` | Zero bytes |
 | `file_too_large` | Over the configured limit |
 | `not_a_pdf` | The header is not `%PDF-` |
+| `conversion_timeout` | 504: the conversion took longer than the limit, which `timeoutSeconds` gives, and was stopped |
+| `conversion_failed` | 500: the conversion process died without answering |
 
 ## Configuration
 
@@ -450,6 +516,7 @@ sending one. `/api/convert/json` includes the same `warnings` as `/api/convert`.
 | `OCR_ENABLED` | Read scanned pages with OCR when tesseract is installed | `true` |
 | `OCR_LANG` | Tesseract languages, joined with `+` | `eng`, and `por+eng` in Docker Compose |
 | `OCR_MAX_PAGES` | Scanned pages read per document; the rest are skipped and reported | `30` |
+| `CONVERSION_TIMEOUT_SECONDS` | Seconds a conversion may run before it is stopped and answered with a 504; a whole number, 1 or more | `240` |
 
 The Docker image installs tesseract with English and Portuguese. If `OCR_LANG` names a language whose data is not
 installed, the startup log says so and scanned pages are reported rather than read.
