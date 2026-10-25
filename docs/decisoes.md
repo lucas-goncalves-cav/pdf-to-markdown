@@ -115,7 +115,11 @@ morre sem responder (OOM, bug) vira `500` com `code: conversion_failed`.
 
 - **240 s:** o normalizador precisa responder antes de o Core desistir; os 60 s de folga
   cobrem upload de até 30 MB, partida do filho, serialização do documento e volta. O pior
-  edital do benchmark levou 35 s sem OCR.
+  edital do benchmark levou 35 s sem OCR. OCR nem sempre cabe: com 1,5 CPU uma página
+  escaneada levou de 13 a 20 s, então um escaneado de mais de uma dúzia de páginas não termina
+  em 240 s, e um de 30 páginas (`OCR_MAX_PAGES` padrão) pediria até dez minutos. Ele passa a
+  receber 504 em 240 s, onde antes o Core desistia em 300 s e a conversão seguia. Fazê-lo
+  terminar é questão de `OCR_MAX_PAGES` ou de CPU, não deste limite.
 - **504, não 422:** conversão que não terminou não diz nada sobre o arquivo; noutro momento
   ela pode terminar. O Core trata 5xx como falha transitória, com backoff, até o máximo de
   tentativas. O contrato do NormalizedDocument não muda e `CONVERTER_VERSION` continua 1.1.0.

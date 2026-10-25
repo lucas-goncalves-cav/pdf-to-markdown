@@ -231,10 +231,15 @@ the child and every `tesseract` it starts one process group. When `CONVERSION_TI
 **Why 240 seconds.** The Automation Core waits 300 seconds for the whole exchange (`Normalizador__TimeoutSeconds`).
 The limit has to be shorter, or the caller gives up first and the conversion runs on with nobody waiting for it. The
 60 seconds between them cover what is not conversion: receiving an upload of up to 30 MB, starting the child,
-serialising a NormalizedDocument that for a 300 page notice runs to several megabytes, and sending it back. And 240
-seconds is far above legitimate work: the slowest of five real notices took 35 seconds without OCR on a loaded
-machine, 14 seconds on its own, and OCR stops after 30 pages of a few seconds each. A caller with a shorter timeout
-should lower the limit with it, keeping it a minute under.
+serialising a NormalizedDocument that for a 300 page notice runs to several megabytes, and sending it back. A caller
+with a shorter timeout should lower the limit with it, keeping it a minute under.
+
+Text fits well within 240 seconds: the slowest of five real notices took 35 seconds without OCR on a loaded machine,
+14 seconds on its own. OCR does not always fit. With the 1.5 CPUs the Core gives the container, a scanned A4 page
+took 13 to 20 seconds (`por+eng`, 300 dpi), so a scan of more than a dozen pages does not finish in 240 seconds, and
+one of 30, the default `OCR_MAX_PAGES`, could need ten minutes. Such a scan now gets a 504 at 240 seconds, where
+before the caller gave up at 300 and the conversion ran on. Making it finish is a matter of `OCR_MAX_PAGES` or CPU,
+not of this limit.
 
 **Why 504.** A conversion that did not finish is not a verdict on the file, unlike the 422 for a PDF that cannot be
 read: on a less loaded server the same file may finish, so the caller should try it again later. The Core treats any
