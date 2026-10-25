@@ -99,3 +99,31 @@ mesmo PDF. Páginas lidas por OCR saem com `text_source: "ocr"`, confiança méd
 
 Nada neste repositório chama modelo de linguagem. Conversão e quality gate são
 determinísticos.
+
+## PM-010. Tempo-limite por conversão, em processo próprio
+
+**Data:** 25/10/2026
+
+O Core desiste depois de `Normalizador__TimeoutSeconds` (300 s), mas a conversão rodava numa
+thread, que o Python não sabe interromper: o trabalho seguia gastando CPU e memória sem
+ninguém esperando. Agora cada conversão roda num processo filho, em sessão nova; o filho e
+os `tesseract` que ele inicia formam um grupo de processos. Em `CONVERSION_TIMEOUT_SECONDS`
+(padrão 240) o grupo inteiro leva `SIGKILL`, todo processo dele é colhido (o servidor é PID 1
+no container e se registra como subreaper fora dele), o diretório temporário próprio do
+filho em `/tmp` é apagado e a resposta é `504` com `code: conversion_timeout`. Filho que
+morre sem responder (OOM, bug) vira `500` com `code: conversion_failed`.
+
+- **240 s:** o normalizador precisa responder antes de o Core desistir; os 60 s de folga
+  cobrem upload de até 30 MB, partida do filho, serialização do documento e volta. O pior
+  edital do benchmark levou 35 s sem OCR. OCR nem sempre cabe: com 1,5 CPU uma página
+  escaneada levou de 13 a 20 s, então um escaneado de mais de uma dúzia de páginas não termina
+  em 240 s, e um de 30 páginas (`OCR_MAX_PAGES` padrão) pediria até dez minutos. Ele passa a
+  receber 504 em 240 s, onde antes o Core desistia em 300 s e a conversão seguia. Fazê-lo
+  terminar é questão de `OCR_MAX_PAGES` ou de CPU, não deste limite.
+- **504, não 422:** conversão que não terminou não diz nada sobre o arquivo; noutro momento
+  ela pode terminar. O Core trata 5xx como falha transitória, com backoff, até o máximo de
+  tentativas. O contrato do NormalizedDocument não muda e `CONVERTER_VERSION` continua 1.1.0.
+- **Resposta em JSON, não pickle:** o filho é quem lê o arquivo não confiável, e o que ele
+  devolve não pode executar código no servidor.
+- **Custo:** de meio a um segundo por conversão, para iniciar o Python e importar o
+  pdfplumber. A linha de comando (`python -m app.normalized`) continua sem limite.

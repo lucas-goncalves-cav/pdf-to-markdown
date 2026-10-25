@@ -13,10 +13,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
+from app import isolation
 from app.api.validation import UploadLimits, UploadRejected, safe_output_name, validate_upload
 from app.converters import ocr as ocr_engine
 from app.converters import pipeline
 from app.converters.extractor import PdfExtractionError
+from app.converters.models import ConversionResult
 from app.normalized import normalize
 from app.web import INDEX_HTML
 
@@ -31,6 +33,22 @@ LIMITS = UploadLimits(
     max_bytes=int(os.getenv("MAX_UPLOAD_BYTES", 10 * 1024 * 1024)),
     max_pages=int(os.getenv("MAX_PAGES", 200)),
 )
+
+
+def _positive_seconds(name: str, default: int) -> int:
+    value = int(os.getenv(name, default))
+
+    if value < 1:
+        raise ValueError(f"{name} must be a whole number of seconds, 1 or more, not {value}.")
+
+    return value
+
+
+#: Seconds a conversion may run before it is stopped and answered with a 504.
+#: Shorter than the 300 seconds the Automation Core waits, so the caller hears
+#: that the conversion was stopped instead of timing out while the work goes
+#: on. The README explains the 240.
+CONVERSION_TIMEOUT_SECONDS = _positive_seconds("CONVERSION_TIMEOUT_SECONDS", 240)
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -110,6 +128,7 @@ async def limits() -> dict[str, int | bool]:
         "maxPages": LIMITS.max_pages,
         "ocrEnabled": _ocr_ready(),
         "ocrMaxPages": OCR.max_pages if _ocr_ready() else 0,
+        "conversionTimeoutSeconds": CONVERSION_TIMEOUT_SECONDS,
     }
 
 
@@ -121,6 +140,8 @@ async def limits() -> dict[str, int | bool]:
     responses={
         400: {"description": "The upload failed validation."},
         422: {"description": "The file is a PDF but could not be read."},
+        500: {"description": "The conversion process ended without an answer."},
+        504: {"description": "The conversion ran past the time limit and was stopped."},
     },
 )
 async def convert(
@@ -134,10 +155,8 @@ async def convert(
 ) -> ConvertResponse:
     data = await _read_and_validate(file)
 
-    try:
-        # Conversion is CPU bound and OCR can take minutes, so it runs off the
-        # event loop, which keeps /health and other requests answering.
-        result = await run_in_threadpool(
+    result = ConversionResult(
+        **await _convert(
             pipeline.convert,
             data,
             include_tables=include_tables,
@@ -145,11 +164,7 @@ async def convert(
             strip_headers=strip_headers,
             ocr=OCR,
         )
-    except PdfExtractionError as error:
-        # The file passed validation, so it is a PDF, but something inside it
-        # could not be read. That is 422 rather than 400: the request was
-        # well formed, the content was not processable.
-        raise HTTPException(status_code=422, detail=str(error)) from error
+    )
 
     logger.info(
         "Converted %s: %d pages, %d blocks.",
@@ -180,6 +195,8 @@ async def convert(
     responses={
         400: {"description": "The upload failed validation."},
         422: {"description": "The file is a PDF but could not be read."},
+        500: {"description": "The conversion process ended without an answer."},
+        504: {"description": "The conversion ran past the time limit and was stopped."},
     },
 )
 async def normalized_document(
@@ -204,19 +221,17 @@ async def normalized_document(
             detail={"code": "invalid_source_uri", "message": "sourceUri must be an http(s) URL."},
         )
 
-    try:
-        document = await run_in_threadpool(
-            normalize,
-            data,
-            source_uri=source_uri,
-            filename=safe_output_name(file.filename or "document.pdf").removesuffix(".md") + ".pdf",
-            include_tables=include_tables,
-            strip_headers=strip_headers,
-            max_pages=LIMITS.max_pages,
-            ocr=OCR,
-        )
-    except PdfExtractionError as error:
-        raise HTTPException(status_code=422, detail=str(error)) from error
+    document = await _convert(
+        normalize,
+        data,
+        correlation_id=correlation_id,
+        source_uri=source_uri,
+        filename=safe_output_name(file.filename or "document.pdf").removesuffix(".md") + ".pdf",
+        include_tables=include_tables,
+        strip_headers=strip_headers,
+        max_pages=LIMITS.max_pages,
+        ocr=OCR,
+    )
 
     quality = document["quality"]
     logger.info(
@@ -246,6 +261,61 @@ def _correlation_id(value: str | None) -> str:
     return uuid.uuid4().hex
 
 
+async def _convert(function, data: bytes, *, correlation_id: str | None = None, **options):
+    """Run a conversion in a process of its own, under the time limit.
+
+    Conversion is CPU bound and OCR can take minutes, so it runs off the event
+    loop, which keeps /health and other requests answering, and in a child
+    process, which unlike a thread can be stopped. When the limit passes, the
+    child and every tesseract it started are killed rather than left running
+    for a caller that has given up. See :mod:`app.isolation`.
+    """
+
+    headers = {"X-Correlation-Id": correlation_id} if correlation_id else None
+
+    try:
+        return await run_in_threadpool(
+            isolation.run,
+            function,
+            data,
+            timeout=CONVERSION_TIMEOUT_SECONDS,
+            correlation_id=correlation_id,
+            **options,
+        )
+    except PdfExtractionError as error:
+        # The file passed validation, so it is a PDF, but something inside it
+        # could not be read. That is 422 rather than 400: the request was
+        # well formed, the content was not processable.
+        raise HTTPException(status_code=422, detail=str(error), headers=headers) from error
+    except isolation.ConversionTimeout as error:
+        logger.warning(
+            "Stopped a conversion at the %ss limit, process group %d killed. correlation_id=%s",
+            error.seconds,
+            error.pid,
+            correlation_id,
+        )
+
+        # 504 rather than 422: the same file can finish on a less loaded
+        # server, so a caller should try it again later rather than give up.
+        raise HTTPException(
+            status_code=504,
+            detail={
+                "code": "conversion_timeout",
+                "message": str(error),
+                "timeoutSeconds": error.seconds,
+            },
+            headers=headers,
+        ) from error
+    except isolation.ConversionFailed as error:
+        logger.error("%s correlation_id=%s", error, correlation_id)
+
+        raise HTTPException(
+            status_code=500,
+            detail={"code": "conversion_failed", "message": str(error)},
+            headers=headers,
+        ) from error
+
+
 @app.post(
     "/api/convert/download",
     response_class=PlainTextResponse,
@@ -254,13 +324,9 @@ def _correlation_id(value: str | None) -> str:
 )
 async def convert_download(file: UploadFile = File(...)) -> PlainTextResponse:
     data = await _read_and_validate(file)
-
-    try:
-        result = await run_in_threadpool(
-            pipeline.convert, data, max_pages=LIMITS.max_pages, ocr=OCR
-        )
-    except PdfExtractionError as error:
-        raise HTTPException(status_code=422, detail=str(error)) from error
+    result = ConversionResult(
+        **await _convert(pipeline.convert, data, max_pages=LIMITS.max_pages, ocr=OCR)
+    )
 
     name = safe_output_name(file.filename or "document.pdf")
 
@@ -283,19 +349,12 @@ async def convert_to_format(
 ):
     data = await _read_and_validate(file)
 
-    try:
-        if output_format == "txt":
-            text = await run_in_threadpool(
-                pipeline.convert_to_text, data, max_pages=LIMITS.max_pages, ocr=OCR
-            )
+    if output_format == "txt":
+        text = await _convert(pipeline.convert_to_text, data, max_pages=LIMITS.max_pages, ocr=OCR)
 
-            return PlainTextResponse(content=text, media_type="text/plain; charset=utf-8")
+        return PlainTextResponse(content=text, media_type="text/plain; charset=utf-8")
 
-        return await run_in_threadpool(
-            pipeline.convert_to_json, data, max_pages=LIMITS.max_pages, ocr=OCR
-        )
-    except PdfExtractionError as error:
-        raise HTTPException(status_code=422, detail=str(error)) from error
+    return await _convert(pipeline.convert_to_json, data, max_pages=LIMITS.max_pages, ocr=OCR)
 
 
 async def _read_and_validate(file: UploadFile) -> bytes:

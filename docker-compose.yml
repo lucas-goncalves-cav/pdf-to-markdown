@@ -10,6 +10,7 @@ services:
       OCR_ENABLED: ${OCR_ENABLED:-true}
       OCR_LANG: ${OCR_LANG:-por+eng}
       OCR_MAX_PAGES: ${OCR_MAX_PAGES:-30}
+      CONVERSION_TIMEOUT_SECONDS: ${CONVERSION_TIMEOUT_SECONDS:-240}
     ports:
       - "${API_PORT:-8000}:8000"
     restart: unless-stopped

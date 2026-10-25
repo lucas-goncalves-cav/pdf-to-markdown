@@ -5,8 +5,11 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
+from app import main
 from app.api import validation
+from app.converters import pipeline
 from app.main import app
+from tests import workloads
 
 client = TestClient(app)
 
@@ -249,6 +252,95 @@ class TestUploadValidation:
         response = upload(b"%PDF-1.4\nbut the rest is garbage")
 
         assert response.status_code == 422
+
+
+class TestTimeLimit:
+    """A conversion past the limit is stopped and answered, and the service carries on."""
+
+    @staticmethod
+    def post(route: str, data: bytes, **headers):
+        return client.post(
+            route, files={"file": ("document.pdf", data, "application/pdf")}, headers=headers
+        )
+
+    @pytest.fixture
+    def stuck(self, monkeypatch):
+        """Every conversion spins forever, under a one second limit."""
+
+        monkeypatch.setattr(main, "CONVERSION_TIMEOUT_SECONDS", 1)
+        monkeypatch.setattr(main, "normalize", workloads.spin)
+
+        for name in ("convert", "convert_to_text", "convert_to_json"):
+            monkeypatch.setattr(pipeline, name, workloads.spin)
+
+    def test_the_limit_is_discoverable(self) -> None:
+        limits = client.get("/api/limits").json()
+
+        assert limits["conversionTimeoutSeconds"] == main.CONVERSION_TIMEOUT_SECONDS
+
+    def test_the_default_answers_before_the_automation_core_gives_up(self, monkeypatch) -> None:
+        monkeypatch.delenv("CONVERSION_TIMEOUT_SECONDS", raising=False)
+
+        assert main._positive_seconds("CONVERSION_TIMEOUT_SECONDS", 240) == 240
+        assert main._positive_seconds("CONVERSION_TIMEOUT_SECONDS", 240) < 300
+
+    def test_the_limit_comes_from_the_environment(self, monkeypatch) -> None:
+        monkeypatch.setenv("CONVERSION_TIMEOUT_SECONDS", "90")
+
+        assert main._positive_seconds("CONVERSION_TIMEOUT_SECONDS", 240) == 90
+
+    @pytest.mark.parametrize("value", ["0", "-5"])
+    def test_a_limit_below_one_second_is_refused(self, monkeypatch, value: str) -> None:
+        monkeypatch.setenv("CONVERSION_TIMEOUT_SECONDS", value)
+
+        with pytest.raises(ValueError, match="CONVERSION_TIMEOUT_SECONDS"):
+            main._positive_seconds("CONVERSION_TIMEOUT_SECONDS", 240)
+
+    def test_the_normalized_document_route_answers_504(self, stuck, simple_pdf: bytes) -> None:
+        response = self.post(
+            "/api/normalized-document", simple_pdf, **{"X-Correlation-Id": "corr-504"}
+        )
+
+        assert response.status_code == 504
+        assert response.json()["detail"] == {
+            "code": "conversion_timeout",
+            "message": "The conversion took longer than the 1 second limit and was stopped.",
+            "timeoutSeconds": 1,
+        }
+        assert response.headers["X-Correlation-Id"] == "corr-504"
+
+    @pytest.mark.parametrize(
+        "route", ["/api/convert", "/api/convert/download", "/api/convert/txt", "/api/convert/json"]
+    )
+    def test_every_conversion_route_has_the_limit(
+        self, stuck, route: str, simple_pdf: bytes
+    ) -> None:
+        response = self.post(route, simple_pdf)
+
+        assert response.status_code == 504
+        assert response.json()["detail"]["code"] == "conversion_timeout"
+
+    def test_the_service_is_healthy_after_a_timeout(self, monkeypatch, simple_pdf: bytes) -> None:
+        with monkeypatch.context() as patch:
+            patch.setattr(main, "CONVERSION_TIMEOUT_SECONDS", 1)
+            patch.setattr(main, "normalize", workloads.spin)
+
+            assert self.post("/api/normalized-document", simple_pdf).status_code == 504
+
+        assert client.get("/health").status_code == 200
+
+        response = self.post("/api/normalized-document", simple_pdf)
+
+        assert response.status_code == 200
+        assert response.json()["blocks"][0]["text"] == "Quarterly Report"
+
+    def test_a_conversion_that_dies_answers_500(self, monkeypatch, simple_pdf: bytes) -> None:
+        monkeypatch.setattr(pipeline, "convert", workloads.exit_quietly)
+
+        response = self.post("/api/convert", simple_pdf)
+
+        assert response.status_code == 500
+        assert response.json()["detail"]["code"] == "conversion_failed"
 
 
 class TestFilenameSanitisation:

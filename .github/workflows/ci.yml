@@ -103,6 +103,11 @@ jobs:
           curl -fsS http://localhost:8000/api/limits | grep -q '"ocrEnabled":true'
           echo "OCR is available in the image."
 
+      # The Automation Core runs the image read only, without capabilities and
+      # with a pid limit. The time limit has to hold there, with tesseract running.
+      - name: Time limit under the Automation Core's restrictions
+        run: bash scripts/smoke_timeout.sh pdf-to-markdown:ci
+
       - name: Dump logs on failure
         if: failure()
         run: docker logs converter
