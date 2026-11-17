@@ -259,6 +259,23 @@ Three more details:
 `python -m app.normalized` still converts in the process that runs it, without a limit, which is what a batch job
 wants.
 
+### Each page is let go as soon as it has been read
+
+pdfplumber keeps everything it parsed on a page, every character, rule and box, until the page is closed, and it
+closes them all only when the file is closed. A notice is a few dozen pages and never noticed. A list of candidates is
+not: thousands of objects a page, so 300 pages of it held three to four gigabytes, more than the 2 GB the Automation
+Core gives the container, and the kernel killed the conversion (`500`, `conversion_failed`). Nothing reads a page again
+once the next one starts, so the extractor closes each page right after reading it, OCR or not, error or not.
+
+| Real list of candidates (FGV), 300 pages converted | Peak memory before | After | Time |
+| --- | --- | --- | --- |
+| MPU, exemption results, 517 pages | 3,186 MB | 120 MB | the same, within 5% |
+| TCE-PE, registration results, 399 pages | 3,776 MB | 117 MB | the same, within 10% |
+
+The output does not change: two real notices of 118 and 111 pages come out with the same `normalized_content_hash`
+the Core stored for them before the change. Time does not drop much, since pdfplumber spends most of it parsing each
+page, so a 300 page list still takes minutes, and how long it may take is the caller's time limit to set.
+
 ### A scan is reported, not returned empty
 
 Without OCR, a scanned page yields nothing. Returning an empty file with no explanation is the least helpful possible

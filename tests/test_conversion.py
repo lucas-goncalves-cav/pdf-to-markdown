@@ -49,6 +49,32 @@ class TestExtraction:
 
         assert {line.page for line in lines} == {1, 2}
 
+    def test_closes_each_page_before_reading_the_next(
+        self, multipage_pdf: bytes, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A page holds every object it parsed until it is closed, and pdfplumber
+        # only closes them all when the file is closed. A list of candidates
+        # held 300 dense pages that way and ran out of memory.
+        seen = []
+        held = []
+        looks_scanned = extractor.looks_scanned
+
+        def spy(page) -> bool:
+            held.extend(
+                (page.page_number, earlier.page_number)
+                for earlier in seen
+                if any(hasattr(earlier, name) for name in ("_objects", "_layout"))
+            )
+            seen.append(page)
+            return looks_scanned(page)
+
+        monkeypatch.setattr(extractor, "looks_scanned", spy)
+        lines = extractor.extract_lines(multipage_pdf)
+
+        assert [page.page_number for page in seen] == [1, 2, 3]
+        assert held == []
+        assert {line.page for line in lines} == {1, 2, 3}
+
     def test_rejects_something_that_is_not_a_pdf(self, not_a_pdf: bytes) -> None:
         with pytest.raises(extractor.PdfExtractionError):
             extractor.extract_lines(not_a_pdf)
