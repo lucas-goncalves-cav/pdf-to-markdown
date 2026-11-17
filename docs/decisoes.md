@@ -145,7 +145,9 @@ e onde ela não morria antes, o limite de tempo cortava (`504`, mpu2025, tcepe e
   objetos quando a próxima começa (visto reprovando sem a mudança).
 - **Medido** com os PDFs oficiais, 300 páginas convertidas, nos limites do compose do Core: o MPU
   (517 páginas) de 3.186 MB para 120 MB de pico, o TCE-PE (399 páginas) de 3.776 MB para 117 MB, e
-  o local de prova da PM-SP (173 páginas), que morria com 4 GB na página 100, termina com 113 MB.
+  o local de prova da PM-SP (173 páginas), que morria com 4 GB na página 100, termina com 113 MB. A
+  página lida por OCR também é fechada: um resultado do TJMS de 15 páginas escaneadas foi de 1.745 MB
+  para 296 MB.
   O tempo fica praticamente igual: quase tudo é o pdfplumber interpretando cada página.
 - **A saída não muda:** dois editais reais (TJPR, 118 páginas; MPU, 111) saem com o mesmo
   `normalized_content_hash` que o Core guardou deles antes. `CONVERTER_VERSION` continua 1.1.0,
