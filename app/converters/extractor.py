@@ -83,29 +83,39 @@ def extract_document(
             metadata = _metadata(pdf.metadata)
 
             for page_number, page in enumerate(pages, start=1):
-                heights[page_number] = float(page.height)
-                widths[page_number] = float(page.width)
-                page_chars[page_number] = sum(1 for char in page.chars if char["text"].isalnum())
+                # A page keeps everything it parsed, every character, rule and box,
+                # until it is closed. A list of candidates runs to thousands of
+                # objects a page, and holding 300 such pages went past the 2 GB the
+                # container has. Nothing below reads a page again once the next one
+                # starts, so each is closed as soon as it has been read.
+                try:
+                    heights[page_number] = float(page.height)
+                    widths[page_number] = float(page.width)
+                    page_chars[page_number] = sum(
+                        1 for char in page.chars if char["text"].isalnum()
+                    )
 
-                if looks_scanned(page):
-                    scanned.append(page_number)
+                    if looks_scanned(page):
+                        scanned.append(page_number)
 
-                    if can_ocr and len(ocr_pages) < ocr.max_pages:
-                        ocr_pages.append(page_number)
-                        lines.extend(_ocr_page(page, page_number, ocr))
-                        continue
+                        if can_ocr and len(ocr_pages) < ocr.max_pages:
+                            ocr_pages.append(page_number)
+                            lines.extend(_ocr_page(page, page_number, ocr))
+                            continue
 
-                page_tables = _tables_for_page(page, page_number) if include_tables else []
+                    page_tables = _tables_for_page(page, page_number) if include_tables else []
 
-                page_lines, sideways = _lines_for_page(page, page_number, exclude=page_tables)
+                    page_lines, sideways = _lines_for_page(page, page_number, exclude=page_tables)
 
-                tables.extend(page_tables)
-                lines.extend(page_lines)
+                    tables.extend(page_tables)
+                    lines.extend(page_lines)
 
-                if sideways > 0:
-                    rotated[page_number] = sideways
-                elif sideways < 0:
-                    turned_pages.append(page_number)
+                    if sideways > 0:
+                        rotated[page_number] = sideways
+                    elif sideways < 0:
+                        turned_pages.append(page_number)
+                finally:
+                    page.close()
     except PdfExtractionError:
         raise
     except Exception as error:  # pragma: no cover - depends on the file

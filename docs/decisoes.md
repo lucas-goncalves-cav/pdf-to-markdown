@@ -127,3 +127,30 @@ morre sem responder (OOM, bug) vira `500` com `code: conversion_failed`.
   devolve não pode executar código no servidor.
 - **Custo:** de meio a um segundo por conversão, para iniciar o Python e importar o
   pdfplumber. A linha de comando (`python -m app.normalized`) continua sem limite.
+
+## PM-011. Cada página é fechada assim que é lida
+
+**Data:** 17/11/2026
+
+O pdfplumber guarda tudo o que leu de uma página (caracteres, réguas, caixas) até a página ser
+fechada, e só fecha todas quando o arquivo fecha. Num edital, de algumas dezenas de páginas, isso
+nunca apareceu. Numa relação de candidatos da FGV, com milhares de objetos por página, as 300
+páginas que o Core converte chegaram a 3,2 e 3,8 GB, acima dos 2 GB do container no Core: o kernel
+matava a conversão (`500`, `conversion_failed`, os três achados do pmespsoldado25 em 15 e 16/11),
+e onde ela não morria antes, o limite de tempo cortava (`504`, mpu2025, tcepe e tjms25).
+
+- **O que mudou:** o extrator fecha cada página logo depois de lê-la, num `finally`, com OCR ou
+  sem, com erro ou sem. Nada lê a página de novo depois que a seguinte começa. O teste
+  `test_closes_each_page_before_reading_the_next` reprova se a página anterior ainda segura os
+  objetos quando a próxima começa (visto reprovando sem a mudança).
+- **Medido** com os PDFs oficiais, 300 páginas convertidas, nos limites do compose do Core: o MPU
+  (517 páginas) de 3.186 MB para 120 MB de pico, o TCE-PE (399 páginas) de 3.776 MB para 117 MB, e
+  o local de prova da PM-SP (173 páginas), que morria com 4 GB na página 100, termina com 113 MB. A
+  página lida por OCR também é fechada: um resultado do TJMS de 15 páginas escaneadas foi de 1.745 MB
+  para 296 MB.
+  O tempo fica praticamente igual: quase tudo é o pdfplumber interpretando cada página.
+- **A saída não muda:** dois editais reais (TJPR, 118 páginas; MPU, 111) saem com o mesmo
+  `normalized_content_hash` que o Core guardou deles antes. `CONVERTER_VERSION` continua 1.1.0,
+  e o Core reaproveita o que já converteu.
+- **O tempo continua do chamador:** uma relação de 300 páginas leva minutos. Quanto ela pode levar
+  é o `CONVERSION_TIMEOUT_SECONDS` do deploy (no Core, `NORMALIZADOR_CONVERSION_TIMEOUT_SECONDS`).
