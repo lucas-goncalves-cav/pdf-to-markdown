@@ -271,7 +271,7 @@ once the next one starts, so the extractor closes each page right after reading 
 | --- | --- | --- | --- |
 | MPU, exemption results, 517 pages | 3,186 MB | 120 MB | the same, within 5% |
 | TCE-PE, registration results, 399 pages | 3,776 MB | 117 MB | the same, within 10% |
-| PM-SP, exam venues, 173 pages, all converted | killed at 4 GB, page 100 | 113 MB | finishes, 341 s on a laptop core |
+| PM-SP, exam venues, 173 pages, all converted | killed at 4 GB, page 100 | 113 MB | finishes |
 
 The output does not change: two real notices of 118 and 111 pages come out with the same `normalized_content_hash`
 the Core stored for them before the change. Time does not drop much, since pdfplumber spends most of it parsing each
